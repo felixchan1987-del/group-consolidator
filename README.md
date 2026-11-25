@@ -57,6 +57,21 @@ Column detection is automatic: it finds the header row, code/name/debit/credit/b
 Xero, QuickBooks, SAP (S/4HANA, Business One), Oracle NetSuite, Sage, MYOB, Microsoft Dynamics 365, and formatted P&L / balance sheet reports with natural signs.
 Any other layout works through manual column selection in the import dialog. Several files per company (e.g. separate BS and P&L) are appended.
 
+### Group chart of accounts
+
+Start by importing your chart of accounts. For example, from Xero use *Accounting › Chart of accounts › Export*, or use any Excel/CSV list with name and type (or code) columns: QuickBooks, MYOB, SAP and others work too. Drop it with the reports, or use **Import chart of accounts…** on the Upload or Account mapping page. The chart is always processed before the reports in the same drop.
+
+- **Type and statement section** come from the account types in the file: Bank, Current Asset, Fixed Asset, Direct Costs, Other Income, Current / Non-current Liability, Accounts receivable (A/R), Long Term Liabilities and so on. The name refines them; for example, "Interest Expense" goes to finance costs. Everything can be changed in the preview.
+- **Replace or add:** you can replace the built-in chart or add the accounts to it. Leading zeros in CSV codes ("090") are kept.
+- **Accounts the consolidation needs** are taken from the chart by name: retained earnings, inventory, intercompany receivable / payable and the like. The rest are added (goodwill, NCI, FX translation reserve, investments in subsidiaries …).
+- **Companies already imported** are mapped again. Lines are then matched to the chart:
+  - by name, ignoring case, "&" vs "and" and punctuation
+  - by code, when the companies share the chart
+  - by close name
+  - by the report section
+- **Guesses:** a match that is only a best guess is marked "guess — check". The mapping page's **To review** filter lists those lines with the unmapped ones.
+- **Investments:** an "Investment in <group company>" line goes to the investment account that the consolidation eliminates.
+
 ## Periods and comparatives
 
 Each imported file is tagged as **current** or **prior (comparative)** period. The import dialog guesses this from the file name, for example "prior", "PY" or last year's year. Each entity has its own prior-period exchange rates, and manual journals belong to one period.

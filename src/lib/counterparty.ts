@@ -32,8 +32,12 @@ export function suggestCounterparty(lineName: string, entities: Entity[], selfId
   return best && !tie ? best.id : null;
 }
 
-/** Fills in missing counterparties for lines mapped to intercompany accounts. Mutates the project. */
+/**
+ * Fills in missing counterparties for lines mapped to intercompany accounts, and maps "Investment in <group company>"
+ * lines to the investment account the consolidation eliminates. Mutates the project.
+ */
 export function autoTagCounterparties(p: Project, overwrite = false): void {
+  mapInvestments(p);
   const icCodes = new Set(p.accounts.filter((a) => a.role && (IC_ROLES as readonly string[]).includes(a.role)).map((a) => a.code));
   for (const e of p.entities) {
     e.counterparty = e.counterparty ?? {};
@@ -44,4 +48,26 @@ export function autoTagCounterparties(p: Project, overwrite = false): void {
       if (cp) e.counterparty[k] = cp;
     }
   }
+}
+
+const INVESTMENT = /\binvestments?\b.{0,12}\b(in|into)\b|\bshares? in\b|\binterest in\b/i;
+
+/**
+ * A parent's "Investment in Northwind Hosting" is eliminated against the subsidiary's equity only when it sits in the
+ * group's investment account. Lines naming a group company are moved there unless already in a consolidation account.
+ */
+export function mapInvestments(p: Project): void {
+  const inv = p.accounts.find((a) => a.role === 'inv_sub')?.code;
+  const assoc = p.accounts.find((a) => a.role === 'inv_assoc')?.code;
+  for (const e of p.entities)
+    for (const l of e.lines) {
+      if (!INVESTMENT.test(l.name)) continue;
+      const k = lineKey(l);
+      const cur = p.accounts.find((a) => a.code === e.mapping[k]);
+      if (cur && (cur.role || cur.type !== 'asset')) continue;
+      const cp = suggestCounterparty(l.name.replace(INVESTMENT, ' '), p.entities, e.id);
+      if (!cp) continue;
+      const target = p.entities.find((x) => x.id === cp)?.method === 'equity' || /associate|joint venture/i.test(l.name) ? assoc : inv;
+      if (target) e.mapping[k] = target;
+    }
 }
