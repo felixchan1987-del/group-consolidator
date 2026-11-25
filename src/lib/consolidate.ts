@@ -55,6 +55,10 @@ export interface TranslationInfo {
   localSum: number;
   cta: number;
   unmappedCount: number;
+  /** "Current Year Earnings" lines left out because the entity's P&L is imported for the same period */
+  skippedCurrentEarnings: number;
+  /** "Current Year Earnings" lines kept in equity because no P&L lines exist for the period */
+  keptCurrentEarnings: number;
   local: Balances;
   translated: Balances;
   /** intercompany amounts: role -> counterparty id ('' = not tagged) -> account -> translated amount */
@@ -186,7 +190,18 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   const ic: TranslationInfo['ic'] = {};
   const details: LineDetail[] = [];
   const files = new Map(e.sources.map((s) => [s.id, s.fileName]));
+  // A balance sheet's "Current Year Earnings" is the P&L result; drop it when the P&L itself is imported
+  const hasPL = e.lines.some((l) => !l.currentEarnings && ['revenue', 'expense'].includes(accMap.get(e.mapping[lineKey(l)])?.type ?? ''));
+  let skippedCurrentEarnings = 0,
+    keptCurrentEarnings = 0;
   for (const l of e.lines) {
+    if (l.currentEarnings) {
+      if (hasPL) {
+        skippedCurrentEarnings++;
+        continue;
+      }
+      keptCurrentEarnings++;
+    }
     const code = e.mapping[lineKey(l)];
     const acc = code ? accMap.get(code) : undefined;
     const key = acc ? acc.code : UNMAPPED;
@@ -218,7 +233,7 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   const cta = -(translatedSum - localSum * fx.closing);
   const fctr = accountByRole(accounts, 'fctr');
   if (fctr && Math.abs(cta) > 1e-9) add(translated, fctr.code, cta);
-  return { entityId: e.id, localSum, cta, unmappedCount, local, translated, ic, details };
+  return { entityId: e.id, localSum, cta, unmappedCount, skippedCurrentEarnings, keptCurrentEarnings, local, translated, ic, details };
 }
 
 /** Equity (credit positive) split: equity excl. FCTR & NCI, FCTR, and profit for the period. */
@@ -263,6 +278,10 @@ export function consolidate(p: Project): ConsolidationResult {
     if (!e.lines.length) checks.push({ level: m[e.id] === 'equity' ? 'warn' : 'error', message: `${e.name}: no trial balance imported.` });
     else if (Math.abs(t.localSum) > EPS)
       checks.push({ level: 'error', message: `${e.name}: trial balance does not balance (difference ${t.localSum.toFixed(2)} ${e.currency}).` });
+    if (t.skippedCurrentEarnings)
+      checks.push({ level: 'ok', message: `${e.name}: "Current Year Earnings" from the balance sheet left out — the profit comes from the imported P&L.` });
+    if (t.keptCurrentEarnings)
+      checks.push({ level: 'warn', message: `${e.name}: only a balance sheet is imported, so this period's profit sits in equity ("Current Year Earnings") and the income statement has no lines for it. Import the P&L as well.` });
     if (t.unmappedCount) checks.push({ level: 'error', message: `${e.name}: ${t.unmappedCount} account line(s) not mapped to the group chart of accounts.` });
     if (e.currency !== p.presentationCurrency && e.rates.closing === 1 && e.rates.average === 1)
       checks.push({ level: 'warn', message: `${e.name}: ${e.currency} → ${p.presentationCurrency} exchange rates are still 1.0.` });

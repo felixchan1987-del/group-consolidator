@@ -28,6 +28,21 @@ The site is static: it has no server, and uploaded files never leave the user's 
 
 ## Supported import layouts
 
+### Formatted reports (balance sheet, profit and loss) — no editing needed
+
+Balance sheet and P&L exports (Xero, QuickBooks, MYOB, Sage and similar) are recognised and read as they are:
+
+- Every row is classified as a title, column header, section heading, account line or total. Indentation, blank rows, notes and footers don't matter.
+- Amount columns are found automatically and their dates read from the header ("31 Dec 2026", "Dec-26", "Year ended …"), so the current and comparative columns import into the right periods in one go.
+- The sign comes from the section a line sits in: assets and expenses are debits; liabilities, equity and income are credits. Contra lines shown negative keep their sign.
+- The report's own totals ("Total Current Assets", "Gross Profit", "Net Profit", "Net Assets" …) are recomputed from the lines picked up and shown with ✓ / ✗. A balance sheet is also checked for Assets = Liabilities + Equity.
+- In the preview, click any row to exclude it or to import a total-looking row as an account.
+- "Current Year Earnings" on a balance sheet is left out automatically once the same company's P&L for that period is imported. Otherwise it stays in equity, with a warning.
+- Codes written as "Sales (200)" or "200 - Sales" are split. Text amounts with thousands separators, brackets, non-breaking spaces or "−" are understood.
+- Mapping suggestions use the section as context. For example, "GST" under Current Liabilities becomes a liability, and an unknown line under Fixed Assets falls back to property, plant and equipment.
+
+### Trial balances and other tables
+
 Column detection is automatic: it finds the header row, code/name/debit/credit/balance columns, and combined "1000 · Cash" account cells. Presets add hints for:
 Xero, QuickBooks, SAP (S/4HANA, Business One), Oracle NetSuite, Sage, MYOB, Microsoft Dynamics 365, and formatted P&L / balance sheet reports with natural signs.
 Any other layout works through manual column selection in the import dialog. Several files per company (e.g. separate BS and P&L) are appended.

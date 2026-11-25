@@ -100,3 +100,67 @@ export function suggestMapping(
   if (fallback && valid.has(fallback)) return { code: fallback, confidence: 'low' };
   return null;
 }
+
+/** Default group account for a report section such as "Assets › Fixed Assets" or "Less Operating Expenses". */
+const SECTION_RULES: { test: RegExp; code: string }[] = [
+  { test: /bank|cash/, code: '1000' },
+  { test: /receivable|debtors/, code: '1100' },
+  { test: /inventor|stock/, code: '1200' },
+  { test: /fixed assets|property|plant|equipment|non-?current assets|long.?term assets/, code: '1500' },
+  { test: /intangible/, code: '1600' },
+  { test: /investments?/, code: '1720' },
+  { test: /current assets|other assets|assets/, code: '1300' },
+  { test: /non-?current liabilit|long.?term liabilit|term liabilit/, code: '2700' },
+  { test: /liabilit|payable|creditors/, code: '2100' },
+  { test: /equity|capital|reserves/, code: '3200' },
+  { test: /cost of (sales|goods)|direct costs|purchases|cogs/, code: '5000' },
+  { test: /other income|non-?operating income/, code: '4100' },
+  { test: /income|revenue|sales|turnover/, code: '4000' },
+  { test: /depreciation|amorti/, code: '5200' },
+  { test: /finance costs|interest/, code: '5400' },
+  { test: /tax/, code: '5500' },
+  { test: /expenses?|overheads|costs?/, code: '5300' },
+];
+
+const TYPE_OF_SECTION: { test: RegExp; types: string[] }[] = [
+  { test: /cost of (sales|goods)|expenses?|overheads|direct costs/, types: ['expense'] },
+  { test: /income|revenue|sales|turnover/, types: ['revenue'] },
+  { test: /liabilit/, types: ['liability'] },
+  { test: /equity|capital and reserves|shareholders|owners/, types: ['equity'] },
+  { test: /assets/, types: ['asset'] },
+];
+
+export function sectionDefault(section: string, accounts: GroupAccount[]): string | null {
+  const parts = section.toLowerCase().split('›').map((x) => x.trim()).reverse(); // innermost first
+  const valid = new Set(accounts.map((a) => a.code));
+  for (const p of parts) for (const r of SECTION_RULES) if (r.test.test(p) && valid.has(r.code)) return r.code;
+  return null;
+}
+
+/**
+ * Mapping suggestion for an imported line. Uses the account name first; when the line came from a report section,
+ * the section must agree with the suggested account type (e.g. "GST" under "Current Liabilities" can't be an asset),
+ * and an unknown name falls back to the section's natural account.
+ */
+export function suggestForLine(
+  line: { code: string; name: string; section?: string },
+  accounts: GroupAccount[],
+  memory?: Record<string, string>,
+): { code: string; confidence: Confidence } | null {
+  const byName = suggestMapping(line.code, line.name, accounts, memory);
+  if (!line.section) return byName;
+  const sec = line.section.toLowerCase();
+  let allowed: string[] | null = null;
+  for (const parts of sec.split('›').map((x) => x.trim()).reverse()) {
+    const hit = TYPE_OF_SECTION.find((t) => t.test.test(parts));
+    if (hit) {
+      allowed = hit.types;
+      break;
+    }
+  }
+  const typeOf = (code: string) => accounts.find((a) => a.code === code)?.type ?? '';
+  if (byName && byName.confidence === 'high' && (!allowed || allowed.includes(typeOf(byName.code)))) return byName;
+  const def = sectionDefault(line.section, accounts);
+  if (def && (!allowed || allowed.includes(typeOf(def)))) return { code: def, confidence: 'low' };
+  return byName;
+}

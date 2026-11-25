@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { PageProps } from '../App';
 import type { AccountRole, AccountType, GroupAccount } from '../types';
-import { suggestMapping } from '../lib/automap';
+import { suggestForLine } from '../lib/automap';
 import { ROLE_LABELS, SECTIONS_BY_TYPE, sortAccounts } from '../lib/coa';
 import { signedAmount } from '../lib/consolidate';
 import { fmt, lineKey } from '../lib/util';
@@ -42,11 +42,11 @@ export default function MappingPage({ project, update, result, prior, go }: Page
 
   const rows = useMemo(() => {
     if (!e) return [];
-    const m = new Map<string, { key: string; code: string; name: string; amount: number; prior: number }>();
+    const m = new Map<string, { key: string; code: string; name: string; amount: number; prior: number; section?: string }>();
     for (const l of e.lines) {
       const k = lineKey(l);
       const type = accMap.get(e.mapping[k])?.type;
-      const r = m.get(k) ?? { key: k, code: l.code, name: l.name, amount: 0, prior: 0 };
+      const r = m.get(k) ?? { key: k, code: l.code, name: l.name, amount: 0, prior: 0, section: l.section };
       if ((l.period ?? 'cy') === 'py') r.prior += signedAmount(l.amount, l.sign, type);
       else r.amount += signedAmount(l.amount, l.sign, type);
       m.set(k, r);
@@ -88,7 +88,7 @@ export default function MappingPage({ project, update, result, prior, go }: Page
         for (const l of x.lines) {
           const k = lineKey(l);
           if (x.mapping[k] && !overwrite) continue;
-          const s = suggestMapping(l.code, l.name, d.accounts, mem);
+          const s = suggestForLine(l, d.accounts, mem);
           if (s) x.mapping[k] = s.code;
         }
       autoTagCounterparties(d, overwrite);
@@ -172,14 +172,17 @@ export default function MappingPage({ project, update, result, prior, go }: Page
           <tbody>
             {visible.map((r) => {
               const cur = e.mapping[r.key] ?? '';
-              const sug = suggestMapping(r.code, r.name, project.accounts);
+              const sug = suggestForLine(r, project.accounts);
               return (
                 <tr key={r.key}>
                   <td>
                     <input type="checkbox" checked={sel.has(r.key)} onChange={(ev) => { const n = new Set(sel); ev.target.checked ? n.add(r.key) : n.delete(r.key); setSel(n); }} />
                   </td>
                   <td className="small">{r.code}</td>
-                  <td>{r.name}</td>
+                  <td>
+                    {r.name}
+                    {r.section && <div className="small muted">{r.section}</div>}
+                  </td>
                   <td className="num">{fmt(r.amount, 2)}</td>
                   {showPrior && <td className="num muted">{fmt(r.prior, 2)}</td>}
                   <td>
@@ -204,10 +207,10 @@ export default function MappingPage({ project, update, result, prior, go }: Page
                   <td className="small">
                     {sug && sug.code !== cur ? (
                       <button className="btn sm" onClick={() => setMap([r.key], sug.code)} title={accMap.get(sug.code)?.name}>
-                        {sug.code} {sug.confidence === 'low' ? '(by code range)' : ''}
+                        {sug.code} {sug.confidence === 'low' ? '(guess)' : ''}
                       </button>
                     ) : sug ? (
-                      <span className={`badge ${sug.confidence === 'high' ? 'ok' : 'warn'}`}>{sug.confidence === 'high' ? 'match' : 'by code range'}</span>
+                      <span className={`badge ${sug.confidence === 'high' ? 'ok' : 'warn'}`}>{sug.confidence === 'high' ? 'match' : 'guess — check'}</span>
                     ) : (
                       <span className="muted">—</span>
                     )}

@@ -48,6 +48,13 @@ export interface TBLine {
   sourceId: string;
   /** defaults to 'cy' */
   period?: Period;
+  /** report section the line was found under, e.g. "Assets › Current Assets" (helps mapping) */
+  section?: string;
+  /**
+   * "Current Year Earnings" from a balance sheet report: the period's profit. Ignored when the P&L for the same
+   * entity and period is imported too, otherwise kept in equity.
+   */
+  currentEarnings?: boolean;
 }
 
 export interface SourceFile {

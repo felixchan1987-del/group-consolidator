@@ -28,7 +28,7 @@ export const SYSTEMS: SystemPreset[] = [
   {
     id: 'xero',
     label: 'Xero',
-    hint: 'Reports → Trial Balance → Export to Excel. Uses "Account Code", "Account", "Debit", "Credit" (YTD columns preferred).',
+    hint: 'Trial Balance export ("Account Code", "Account", "Debit", "Credit", YTD columns preferred; codes like "Sales (200)" are split). Balance Sheet and Profit and Loss exports are read as reports, no editing needed.',
     synonyms: { code: ['account code'], name: ['account'], debit: ['ytd debit'], credit: ['ytd credit'] },
   },
   {
@@ -181,6 +181,8 @@ export function detectColumns(rows: unknown[][], headerRow: number, preset?: Sys
 
 export function splitCodeName(s: string): { code: string; name: string } {
   const t = s.trim();
+  const tail = t.match(/^(.+?)\s*\((\w{0,3}[-.]?\d[\w.\-/]{0,11})\)$/); // Xero: "Sales (200)"
+  if (tail) return { code: tail[2], name: tail[1].trim() };
   const m = t.match(/^([A-Za-z]{0,3}\d[\d.\-/]*)\s*(?:[-–—:·•|]\s*|\s+)(.+)$/);
   if (m) return { code: m[1], name: m[2].trim() };
   return { code: '', name: t };
@@ -224,6 +226,9 @@ export function extractLines(rows: unknown[][], opt: ImportOptions): ImportResul
       const sp = splitCodeName(String(r[cCN] ?? ''));
       if (!code) code = sp.code;
       if (!name) name = sp.name;
+    } else if (!code && name) {
+      const sp = splitCodeName(name);
+      if (sp.code && sp.name !== name && /\)$/.test(name)) ({ code, name } = sp); // "Sales (200)" in the name column
     }
     if (!code && !name) {
       skipped++;
