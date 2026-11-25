@@ -48,6 +48,8 @@ The engine consolidates each period on its own, with that period's rates and jou
 | Mid-year acquisition | Only post-acquisition results are consolidated, time-apportioned by days. The pre-acquisition part becomes part of the net assets acquired. Tick "TB covers only this part" if the uploaded TB already starts at acquisition. Associates bought mid-year pick up only post-acquisition profit. |
 | Loss of control | Results are consolidated up to the disposal date. Net assets, NCI and the whole FCTR are derecognised, and the group gain (proceeds − (net assets − NCI + goodwill) + recycled FCTR) replaces the gain in the holder's books on the "Gain on disposal of subsidiaries" account. |
 | Intercompany | Balances mapped to IC receivable/payable and IC revenue/expense are eliminated up to the matched amount. Mismatches stay visible and are reported. |
+| Intra-group dividends | Dividends declared by a subsidiary or associate × each group holder's % are removed from the holder's "Dividend income from group companies" (posted at holder level). The NCI's share of a subsidiary's dividend reduces NCI. A warning appears if the receiver's recorded income doesn't match. |
+| Unrealised profit (URP) | Per seller/buyer pair: closing inventory × margin (or mark-up / (1 + mark-up)) → Dr cost of sales, Cr inventories. Opening URP is released through opening retained earnings. Posted at the seller, so NCI bears its share of upstream sales. Roll forward carries closing inventory into next period's opening. |
 | Manual journals | Free-form balanced journals with templates for dividends, unrealised profit and goodwill impairment. |
 
 Sign convention internally: debit positive, credit negative.
@@ -58,7 +60,7 @@ Sign convention internally: debit positive, credit negative.
 - Periods are 12 months. Time apportionment is by days.
 - Not automated, but flagged with a warning: step acquisitions (remeasuring a previously held interest), partial disposals without loss of control (NCI equity transactions), remeasuring an interest retained after losing control, and disposals of associates.
 - Manual journals that affect profit are attributed entirely to owners of the parent.
-- Intercompany dividends and unrealised profit need manual journals.
+- URP on fixed-asset transfers and URP with associates need manual journals.
 
 ## Project structure
 

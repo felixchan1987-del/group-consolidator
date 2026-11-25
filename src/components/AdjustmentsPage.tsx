@@ -96,7 +96,138 @@ export default function AdjustmentsPage({ project, update, result, prior, go }: 
             <input type="checkbox" checked={project.settings.autoEliminateIC} onChange={(e) => update((d) => void (d.settings.autoEliminateIC = e.target.checked))} />
             Automatically eliminate balances mapped to Intercompany receivables/payables and Intercompany revenue/expenses
           </label>
-          <p className="small muted">Matched amounts are eliminated; any mismatch stays visible in the consolidated accounts and is reported in the checks. Use manual journals below for dividends, unrealised profit in inventory, intercompany loans with interest, etc.</p>
+          <p className="small muted">Matched amounts are eliminated; any mismatch stays visible in the consolidated accounts and is reported in the checks. Dividends and unrealised profit in inventory are handled below; use manual journals for anything else (e.g. profit on intra-group fixed asset transfers).</p>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-h">
+          <h3>Intra-group dividends</h3>
+          <label className="check small">
+            <input type="checkbox" checked={project.settings.autoEliminateDividends !== false} onChange={(e) => update((d) => void (d.settings.autoEliminateDividends = e.target.checked))} />
+            Eliminate automatically
+          </label>
+        </div>
+        <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <p className="small muted">
+            Map dividends declared by group companies to <b>Dividends declared</b> and dividends received from group companies to <b>Dividend income from group companies</b>. Each holder&apos;s share
+            (declared × holding %) is removed from its income; dividends to non-controlling shareholders reduce NCI. Associates&apos; dividends are eliminated the same way.
+          </p>
+          {result.dividends.length === 0 ? (
+            <span className="small muted">No dividends declared by subsidiaries or associates in the current period.</span>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Paid by</th>
+                    <th>Received by</th>
+                    <th className="num">Eliminated ({project.presentationCurrency})</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.dividends.map((d, i) => (
+                    <tr key={i}>
+                      <td>{d.payerName}</td>
+                      <td>{d.holderName}</td>
+                      <td className="num">{fmt(d.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-h">
+          <h3>Unrealised profit in inventory</h3>
+          <button
+            className="btn sm primary"
+            disabled={project.entities.length < 2}
+            onClick={() =>
+              update((d) => {
+                const [a, b] = [d.parentId ?? d.entities[0].id, d.entities.find((e) => e.id !== (d.parentId ?? d.entities[0].id))!.id];
+                d.urp = [...(d.urp ?? []), { id: uid('urp'), sellerId: a, buyerId: b, description: '', closingInventory: 0, openingInventory: 0, rate: 0, basis: 'margin', period: 'cy' }];
+              })
+            }
+          >
+            + Add
+          </button>
+        </div>
+        <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <p className="small muted">
+            Goods sold within the group and still in the buyer&apos;s inventory at the period end. The seller&apos;s profit on them is removed (Dr cost of sales, Cr inventories). Last period&apos;s unrealised profit
+            (opening inventory) is released to this period&apos;s profit. When a partly owned subsidiary is the seller, NCI bears its share. Amounts in {project.presentationCurrency}.
+          </p>
+          {(project.urp ?? []).length > 0 && (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Period</th>
+                    <th>Seller</th>
+                    <th>Buyer</th>
+                    <th className="num">Closing inventory</th>
+                    <th className="num">Opening inventory</th>
+                    <th className="num">Profit %</th>
+                    <th>Basis</th>
+                    <th className="num">URP (closing)</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {(project.urp ?? []).map((u) => {
+                    const set = (fn: (x: typeof u) => void) => update((d) => fn(d.urp!.find((x) => x.id === u.id)!));
+                    const res = ((u.period ?? 'cy') === 'cy' ? result : prior)?.urp.find((x) => x.id === u.id);
+                    const ents = project.entities;
+                    return (
+                      <tr key={u.id}>
+                        <td>
+                          <select value={u.period ?? 'cy'} onChange={(e) => set((x) => void (x.period = e.target.value as Period))}>
+                            <option value="cy">Current</option>
+                            <option value="py">Prior</option>
+                          </select>
+                        </td>
+                        <td>
+                          <select value={u.sellerId} onChange={(e) => set((x) => void (x.sellerId = e.target.value))}>
+                            {ents.map((e) => (
+                              <option key={e.id} value={e.id}>{e.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <select value={u.buyerId} onChange={(e) => set((x) => void (x.buyerId = e.target.value))}>
+                            {ents.map((e) => (
+                              <option key={e.id} value={e.id} disabled={e.id === u.sellerId}>{e.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                        {(['closingInventory', 'openingInventory', 'rate'] as const).map((k) => (
+                          <td key={k} className="num">
+                            <input type="number" value={u[k] || ''} onChange={(e) => set((x) => void (x[k] = num(e.target.value)))} style={{ width: k === 'rate' ? 70 : 120, textAlign: 'right' }} />
+                          </td>
+                        ))}
+                        <td>
+                          <select value={u.basis} onChange={(e) => set((x) => void (x.basis = e.target.value as 'margin' | 'markup'))}>
+                            <option value="margin">Margin on sales</option>
+                            <option value="markup">Mark-up on cost</option>
+                          </select>
+                        </td>
+                        <td className="num">{res ? fmt(res.closingUrp) : '—'}</td>
+                        <td>
+                          <button className="btn sm ghost danger" onClick={() => update((d) => void (d.urp = d.urp!.filter((x) => x.id !== u.id)))} aria-label="Remove">
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
@@ -188,17 +319,10 @@ export default function AdjustmentsPage({ project, update, result, prior, go }: 
 
 const TEMPLATES = [
   {
-    label: 'Intra-group dividend',
+    label: 'URP on fixed asset transfer',
     lines: [
       { account: '4100', debit: 0, credit: 0 },
-      { account: '3200', debit: 0, credit: 0 },
-    ],
-  },
-  {
-    label: 'Unrealised profit in inventory',
-    lines: [
-      { account: '5000', debit: 0, credit: 0 },
-      { account: '1200', debit: 0, credit: 0 },
+      { account: '1500', debit: 0, credit: 0 },
     ],
   },
   {

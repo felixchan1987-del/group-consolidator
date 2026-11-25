@@ -4,7 +4,8 @@ import { analyseStructure } from './structure';
 import { incomeStatement, balanceSheet } from './statements';
 import { detectColumns, detectHeaderRow, extractLines, readWorkbook } from './importer';
 import { sampleWorkbook, SAMPLE } from './sample';
-import { parseAmount } from './util';
+import { lineKey, parseAmount } from './util';
+import { suggestMapping } from './automap';
 import { projectForPeriod, rollForward, shiftYears, hasPrior } from './periods';
 import * as XLSX from 'xlsx';
 
@@ -237,5 +238,101 @@ describe('project migration', () => {
     const p = buildSampleProject();
     p.accounts = p.accounts.filter((a) => a.role !== 'disposal_gain');
     expect(migrateProject(p).accounts.some((a) => a.role === 'disposal_gain')).toBe(true);
+  });
+});
+
+describe('intra-group dividends and unrealised profit', () => {
+  const addLines = (p: ReturnType<typeof buildSampleProject>, idx: number, rows: [string, string, number][]) => {
+    const e = p.entities[idx];
+    for (const [code, name, amount] of rows) {
+      const l = { id: `t${code}${amount}`, code, name, amount, sign: 'dr' as const, sourceId: 's' };
+      e.lines.push(l);
+      e.mapping[lineKey(l)] = suggestMapping(code, name, p.accounts)!.code;
+    }
+  };
+  const run = (p: ReturnType<typeof buildSampleProject>) => consolidate(projectForPeriod(p, 'cy'));
+  const owners = (r: ReturnType<typeof consolidate>) => balanceSheet(r).find((l) => l.label === 'Equity attributable to owners of the parent')!.value;
+
+  it('maps dividend accounts automatically', () => {
+    const accts = buildSampleProject().accounts;
+    expect(suggestMapping('3500', 'Dividends paid', accts)?.code).toBe('3250');
+    expect(suggestMapping('4800', 'Dividend received from subsidiary', accts)?.code).toBe('4060');
+    expect(suggestMapping('4810', 'Intercompany dividend income', accts)?.code).toBe('4060');
+  });
+
+  it('eliminates a dividend from an 80% subsidiary: profit and owners unchanged, NCI receives its share', () => {
+    const base = run(buildSampleProject());
+    const p = buildSampleProject();
+    addLines(p, 1, [['3250', 'Dividends paid', 50000], ['1010', 'Checking', -50000]]); // Beacon pays 50k
+    addLines(p, 0, [['4060', 'Dividend received from subsidiary Beacon', -40000], ['1000', 'Business Bank Account', 40000]]); // Apex gets 80%
+    const r = run(p);
+    expect(r.dividends).toHaveLength(1);
+    close(r.dividends[0].amount, 40000);
+    close(r.profit.total, base.profit.total);
+    close(r.nciTotal, base.nciTotal - 10000);
+    close(owners(r), owners(base));
+    close(r.consolidated['4060'] ?? 0, 0);
+    expect(r.checks.filter((c) => c.level !== 'ok')).toEqual([]);
+  });
+
+  it('handles a dividend from an indirect subsidiary (held 60% by an 80% subsidiary)', () => {
+    const usd = () => {
+      const p = buildSampleProject();
+      p.entities[2].currency = 'USD';
+      return p;
+    };
+    const base = run(usd());
+    const p = usd();
+    addLines(p, 2, [['3250', 'Dividends paid', 100000], ['113100', 'Bank Deutsche Bank', -100000]]); // Cobalt pays 100k
+    addLines(p, 1, [['4060', 'Dividend from group company Cobalt', -60000], ['1010', 'Checking', 60000]]); // Beacon gets 60%
+    const r = run(p);
+    close(r.profit.total, base.profit.total);
+    close(owners(r), owners(base));
+    close(r.nciTotal, base.nciTotal - 40000); // only the 40% outside shareholders of Cobalt received cash
+    expect(r.checks.filter((c) => c.level === 'error' || c.level === 'warn')).toEqual([]);
+  });
+
+  it('warns when the receiver did not record the dividend as group dividend income', () => {
+    const p = buildSampleProject();
+    addLines(p, 1, [['3250', 'Dividends paid', 50000], ['1010', 'Checking', -50000]]);
+    addLines(p, 0, [['4100', 'Other income', -40000], ['1000', 'Business Bank Account', 40000]]);
+    expect(run(p).checks.some((c) => c.level === 'warn' && c.message.includes('intra-group dividend income'))).toBe(true);
+  });
+
+  it('removes unrealised profit on upstream sales and charges NCI its share', () => {
+    const base = run(buildSampleProject());
+    const p = buildSampleProject();
+    const [apex, beacon] = p.entities;
+    p.urp = [{ id: 'u1', sellerId: beacon.id, buyerId: apex.id, description: 'Goods', closingInventory: 100000, openingInventory: 40000, rate: 25, basis: 'margin' }];
+    const r = run(p);
+    close(r.urp[0].closingUrp, 25000);
+    close(r.urp[0].openingUrp, 10000);
+    close(r.profit.total, base.profit.total - 15000);
+    close(r.profit.nci, base.profit.nci - 3000); // 20% NCI in the seller
+    close(r.consolidated['1200'], base.consolidated['1200'] - 25000);
+    close(r.nciTotal, base.nciTotal - 5000); // 20% x closing URP (opening part via reserves + profit)
+    close(Object.values(r.consolidated).reduce((a, b) => a + b, 0), 0);
+  });
+
+  it('downstream URP (parent sells) is borne fully by the owners; mark-up basis', () => {
+    const base = run(buildSampleProject());
+    const p = buildSampleProject();
+    const [apex, beacon] = p.entities;
+    p.urp = [{ id: 'u2', sellerId: apex.id, buyerId: beacon.id, description: '', closingInventory: 100000, openingInventory: 0, rate: 25, basis: 'markup' }];
+    const r = run(p);
+    close(r.urp[0].closingUrp, 20000); // 25% mark-up on cost = 20% of selling price
+    close(r.profit.nci, base.profit.nci);
+    close(r.profit.owners, base.profit.owners - 20000);
+  });
+
+  it('rolls URP forward: closing inventory becomes next period opening', () => {
+    const p = buildSampleProject();
+    p.urp = [{ id: 'u1', sellerId: p.entities[1].id, buyerId: p.entities[0].id, description: '', closingInventory: 100000, openingInventory: 0, rate: 25, basis: 'margin' }];
+    const next = rollForward(p);
+    const cy = projectForPeriod(next, 'cy').urp!;
+    expect(cy).toHaveLength(1);
+    expect(cy[0].openingInventory).toBe(100000);
+    expect(cy[0].closingInventory).toBe(0);
+    expect(projectForPeriod(next, 'py').urp![0].closingInventory).toBe(100000);
   });
 });

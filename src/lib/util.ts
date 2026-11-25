@@ -80,7 +80,8 @@ export function emptyProject(): Project {
     holdings: [],
     accounts: DEFAULT_ACCOUNTS.map((a) => ({ ...a })),
     journals: [],
-    settings: { autoEliminateIC: true, controlThreshold: 50, influenceThreshold: 20 },
+    urp: [],
+    settings: { autoEliminateIC: true, autoEliminateDividends: true, controlThreshold: 50, influenceThreshold: 20 },
   };
 }
 
@@ -91,7 +92,13 @@ export function migrateProject(p: Project): Project {
   const base = emptyProject();
   const out: Project = { ...base, ...p, settings: { ...base.settings, ...p.settings } };
   const roles = new Set(out.accounts.map((a) => a.role).filter(Boolean));
-  const codes = new Set(out.accounts.map((a) => a.code));
-  for (const a of DEFAULT_ACCOUNTS) if (a.role && !roles.has(a.role) && !codes.has(a.code)) out.accounts = [...out.accounts, { ...a }];
+  out.accounts = out.accounts.map((x) => ({ ...x }));
+  for (const a of DEFAULT_ACCOUNTS) {
+    if (!a.role || roles.has(a.role)) continue;
+    const same = out.accounts.find((x) => x.code === a.code);
+    if (!same) out.accounts.push({ ...a });
+    else if (!same.role && same.type === a.type) same.role = a.role; // e.g. 1200 Inventories gains the 'inventory' role
+  }
+  out.urp = out.urp ?? [];
   return out;
 }
