@@ -4,7 +4,7 @@ import { consolidate, type ConsolidationResult } from './lib/consolidate';
 import { downloadJson, useProject } from './lib/store';
 import { buildSampleProject } from './lib/sample';
 import { CURRENCIES, emptyProject, migrateProject } from './lib/util';
-import { hasPrior, projectForPeriod } from './lib/periods';
+import { addDays, hasPrior, periodStartOf, projectForPeriod, shiftYears } from './lib/periods';
 import UploadPage from './components/UploadPage';
 import StructurePage from './components/StructurePage';
 import MappingPage from './components/MappingPage';
@@ -82,9 +82,23 @@ export default function App() {
         </div>
         <div className="project-meta">
           <input aria-label="Group name" value={project.name} onChange={(e) => update((d) => void (d.name = e.target.value))} style={{ width: 180 }} />
-          <label className="row small muted">
-            Period end
-            <input type="date" value={project.periodEnd} onChange={(e) => update((d) => void (d.periodEnd = e.target.value))} />
+          <label className="row small muted" title="Reporting period. The start defaults to 12 months before the period end; set it for year-to-date reporting (e.g. 1 Jul – 30 Sep).">
+            Period
+            <input
+              type="date"
+              aria-label="Period start"
+              value={periodStartOf(project, 'cy')}
+              max={project.periodEnd}
+              onChange={(e) =>
+                update((d) => {
+                  const v = e.target.value;
+                  if (!v || v === addDays(shiftYears(d.periodEnd, -1), 1)) delete d.periodStart;
+                  else d.periodStart = v;
+                })
+              }
+            />
+            to
+            <input type="date" aria-label="Period end" value={project.periodEnd} onChange={(e) => update((d) => void (d.periodEnd = e.target.value))} />
           </label>
           <label className="row small muted">
             Presentation

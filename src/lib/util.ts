@@ -11,7 +11,10 @@ export const lineKey = (l: Pick<TBLine, 'code' | 'name'>) => `${(l.code || '').t
 export function parseAmount(v: unknown): number | null {
   if (v === null || v === undefined || v === '') return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  let s = String(v).trim();
+  let s = String(v)
+    .replace(/[\u00a0\u2007\u202f]/g, ' ')
+    .replace(/[\u2212\u2013]/g, '-')
+    .trim();
   if (!s) return null;
   let sign = 1;
   if (/^\(.*\)$/.test(s)) {

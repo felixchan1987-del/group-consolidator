@@ -3,9 +3,9 @@ import type { PageProps } from '../App';
 import type { Project, SourceFile, TBLine } from '../types';
 import ImportDialog, { type ImportTarget } from './ImportDialog';
 import { readWorkbook, type ParsedSheet } from '../lib/importer';
-import { suggestMapping } from '../lib/automap';
+import { suggestForLine } from '../lib/automap';
 import { autoTagCounterparties } from '../lib/counterparty';
-import { SAMPLE, downloadSampleFile, downloadTemplate } from '../lib/sample';
+import { SAMPLE, downloadSampleFile, downloadTemplate, downloadXeroReports } from '../lib/sample';
 import { CURRENCIES, fmt, lineKey, newEntity } from '../lib/util';
 import { METHOD_SHORT } from '../lib/structure';
 import { lineIn, periodEndOf, rollForward, shiftYears } from '../lib/periods';
@@ -48,26 +48,28 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
     setQueue((q) => [...q, ...pend]);
   };
 
-  const onImport = (t: ImportTarget, lines: TBLine[], src: SourceFile) => {
+  const onImport = (t: ImportTarget, lines: TBLine[], sources: SourceFile[]) => {
     update((d) => {
       let e = t.entityId ? d.entities.find((x) => x.id === t.entityId) : undefined;
       if (!e) {
         e = newEntity(t.newName, t.currency);
+        // the first company in an empty project sets the presentation currency
+        if (!d.entities.length) d.presentationCurrency = t.currency;
         d.entities.push(e);
         if (!d.parentId) d.parentId = e.id;
       }
       if (t.replace) {
-        const per = src.period ?? 'cy';
-        e.lines = e.lines.filter((l) => (l.period ?? 'cy') !== per);
-        e.sources = e.sources.filter((x) => (x.period ?? 'cy') !== per);
+        const pers = new Set(sources.map((s) => s.period ?? 'cy'));
+        e.lines = e.lines.filter((l) => !pers.has(l.period ?? 'cy'));
+        e.sources = e.sources.filter((x) => !pers.has(x.period ?? 'cy'));
       }
       e.lines.push(...lines);
-      e.sources.push(src);
+      e.sources.push(...sources);
       const mem = mappingMemory(d);
       for (const l of lines) {
         const k = lineKey(l);
         if (e.mapping[k]) continue;
-        const s = suggestMapping(l.code, l.name, d.accounts, mem);
+        const s = suggestForLine(l, d.accounts, mem);
         if (s) e.mapping[k] = s.code;
       }
       autoTagCounterparties(d);
@@ -83,7 +85,7 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
         <div>
           <h2>Upload financial reports</h2>
           <p className="muted">
-            Drop the trial balances (or balance sheet / P&amp;L exports) from each company's accounting system — Xero, QuickBooks, SAP, NetSuite, Sage, MYOB, Dynamics or any Excel/CSV layout.
+            Drop the trial balances, or the balance sheet and profit &amp; loss reports exactly as exported, from each company's accounting system — Xero, QuickBooks, SAP, NetSuite, Sage, MYOB, Dynamics or any Excel/CSV layout.
             Columns are detected automatically and accounts are auto-mapped to the group chart of accounts.
           </p>
         </div>
@@ -158,6 +160,14 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
               {SAMPLE.map((s) => (
                 <button key={s.code} className="btn sm" onClick={() => downloadSampleFile(s)}>
                   ⬇ {s.name} ({s.system})
+                </button>
+              ))}
+            </div>
+            <p className="small muted">Or try formatted reports, exported the way Xero does (balance sheet + profit and loss, with comparatives, headings and totals):</p>
+            <div className="row">
+              {SAMPLE.map((s) => (
+                <button key={s.code} className="btn sm" onClick={() => downloadXeroReports(s, project.accounts)}>
+                  ⬇ {s.name} — Xero BS + P&amp;L
                 </button>
               ))}
             </div>
@@ -259,6 +269,13 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
           queueInfo={total > 1 ? `File ${total - queue.length + 1} of ${total}` : 'Check the detected columns, then import'}
           onImport={onImport}
           onSkip={() => setQueue((q) => q.slice(1))}
+          onSetPeriod={(end, start) =>
+            update((d) => {
+              d.periodEnd = end;
+              if (start) d.periodStart = start;
+              else if (d.periodStart && !(d.periodStart <= end && d.periodStart > shiftYears(end, -1))) delete d.periodStart;
+            })
+          }
         />
       )}
     </section>

@@ -55,6 +55,10 @@ export interface TranslationInfo {
   localSum: number;
   cta: number;
   unmappedCount: number;
+  /** "Current Year Earnings" lines left out because the entity's P&L is imported for the same period */
+  skippedCurrentEarnings: number;
+  /** "Current Year Earnings" lines kept in equity because no P&L lines exist for the period */
+  keptCurrentEarnings: number;
   local: Balances;
   translated: Balances;
   /** intercompany amounts: role -> counterparty id ('' = not tagged) -> account -> translated amount */
@@ -186,7 +190,18 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   const ic: TranslationInfo['ic'] = {};
   const details: LineDetail[] = [];
   const files = new Map(e.sources.map((s) => [s.id, s.fileName]));
+  // A balance sheet's "Current Year Earnings" is the P&L result; drop it when the P&L itself is imported
+  const hasPL = e.lines.some((l) => !l.currentEarnings && ['revenue', 'expense'].includes(accMap.get(e.mapping[lineKey(l)])?.type ?? ''));
+  let skippedCurrentEarnings = 0,
+    keptCurrentEarnings = 0;
   for (const l of e.lines) {
+    if (l.currentEarnings) {
+      if (hasPL) {
+        skippedCurrentEarnings++;
+        continue;
+      }
+      keptCurrentEarnings++;
+    }
     const code = e.mapping[lineKey(l)];
     const acc = code ? accMap.get(code) : undefined;
     const key = acc ? acc.code : UNMAPPED;
@@ -218,7 +233,7 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   const cta = -(translatedSum - localSum * fx.closing);
   const fctr = accountByRole(accounts, 'fctr');
   if (fctr && Math.abs(cta) > 1e-9) add(translated, fctr.code, cta);
-  return { entityId: e.id, localSum, cta, unmappedCount, local, translated, ic, details };
+  return { entityId: e.id, localSum, cta, unmappedCount, skippedCurrentEarnings, keptCurrentEarnings, local, translated, ic, details };
 }
 
 /** Equity (credit positive) split: equity excl. FCTR & NCI, FCTR, and profit for the period. */
@@ -263,6 +278,10 @@ export function consolidate(p: Project): ConsolidationResult {
     if (!e.lines.length) checks.push({ level: m[e.id] === 'equity' ? 'warn' : 'error', message: `${e.name}: no trial balance imported.` });
     else if (Math.abs(t.localSum) > EPS)
       checks.push({ level: 'error', message: `${e.name}: trial balance does not balance (difference ${t.localSum.toFixed(2)} ${e.currency}).` });
+    if (t.skippedCurrentEarnings)
+      checks.push({ level: 'ok', message: `${e.name}: "Current Year Earnings" from the balance sheet left out — the profit comes from the imported P&L.` });
+    if (t.keptCurrentEarnings)
+      checks.push({ level: 'warn', message: `${e.name}: only a balance sheet is imported, so this period's profit sits in equity ("Current Year Earnings") and the income statement has no lines for it. Import the P&L as well.` });
     if (t.unmappedCount) checks.push({ level: 'error', message: `${e.name}: ${t.unmappedCount} account line(s) not mapped to the group chart of accounts.` });
     if (e.currency !== p.presentationCurrency && e.rates.closing === 1 && e.rates.average === 1)
       checks.push({ level: 'warn', message: `${e.name}: ${e.currency} → ${p.presentationCurrency} exchange rates are still 1.0.` });
@@ -273,7 +292,7 @@ export function consolidate(p: Project): ConsolidationResult {
   const working: Record<string, Balances> = {};
   for (const id of consolidatedIds) working[id] = { ...translation[id].translated };
   const end = p.periodEnd;
-  const opening = openingDate(end);
+  const opening = openingDate(end, p.periodStart);
   const plAccounts = accounts.filter((a) => a.type === 'revenue' || a.type === 'expense');
 
   // 1b. Entities that joined or left the group during the period: keep only the results for the time in the group.
@@ -384,13 +403,13 @@ export function consolidate(p: Project): ConsolidationResult {
     const parts = equityParts(translation[e.id].translated, accounts);
     const sched: AssocSchedule = { entityId: e.id, name: e.name, groupVotes: structure.groupVotes[e.id], equity: parts.equityExFx + parts.fctr, profit: parts.profit, pickups: [] };
     for (const h of p.holdings.filter((x) => x.investeeId === e.id && isCons(x.holderId) && m[x.holderId] !== 'disposed')) {
-      if (inPeriod(h.disposalDate, end))
+      if (inPeriod(h.disposalDate, end, opening))
         checks.push({ level: 'warn', message: `${name(h.holderId)} sold shares in associate ${e.name} during the period — record the disposal with a manual journal.` });
       if (!heldOn(h, end)) continue;
       const f = h.pct / 100;
       const acq = h.acqEquity ?? sched.equity;
       // bought during the period: only the post-acquisition share of profit; the rest is in the acquired net assets
-      const post = inPeriod(h.acqDate, end) ? fractionFrom(h.acqDate, end) : 1;
+      const post = inPeriod(h.acqDate, end, opening) ? fractionFrom(h.acqDate, end, opening) : 1;
       const profit = f * parts.profit * post;
       const reserves = f * (sched.equity + parts.profit - acq) - profit;
       sched.pickups.push({ holderId: h.holderId, holderName: name(h.holderId), pct: f, cost: h.cost, acqEquity: acq, reserves, profit });
@@ -417,7 +436,7 @@ export function consolidate(p: Project): ConsolidationResult {
     const { equityExFx, fctr, profit } = equityParts(b, accounts);
     const g = structure.effective[sid];
     const holds = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId) && m[h.holderId] !== 'disposed' && heldOn(h, end));
-    for (const h of p.holdings.filter((x) => x.investeeId === sid && inPeriod(x.disposalDate, end)))
+    for (const h of p.holdings.filter((x) => x.investeeId === sid && inPeriod(x.disposalDate, end, opening)))
       checks.push({ level: 'warn', message: `${name(h.holderId)} sold part of ${s.name} without losing control — the change in NCI is an equity transaction; record it with a manual journal.` });
     const sched: SubSchedule = {
       entityId: sid,
@@ -483,7 +502,7 @@ export function consolidate(p: Project): ConsolidationResult {
     const { equityExFx: e0, fctr: f0 } = equityParts(translation[sid].translated, accounts); // opening equity, FCTR
     const pIn = equityParts(b, accounts).profit; // results up to disposal
     const held = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId) && heldOn(h, opening));
-    const sold = held.filter((h) => inPeriod(h.disposalDate, end));
+    const sold = held.filter((h) => inPeriod(h.disposalDate, end, opening));
     let r0 = 0,
       goodwill = 0,
       indirect = 0;

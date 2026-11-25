@@ -4,7 +4,7 @@ import { balanceSheet, incomeStatement, type StmtLine } from '../lib/statements'
 import { exportConsolidation } from '../lib/exportXlsx';
 import { ADJ_LABELS } from '../lib/consolidate';
 import { fmt, pct } from '../lib/util';
-import { periodEndOf } from '../lib/periods';
+import { periodEndOf, periodStartOf } from '../lib/periods';
 import DrillPanel from './DrillPanel';
 import { UNMAPPED } from '../lib/consolidate';
 import type { Period } from '../types';
@@ -60,7 +60,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
   const openDrill = (account: string, column: string, period: Period) => setDrillAt({ account, column, period });
   const [showZero, setShowZero] = useState(false);
   const cur = project.presentationCurrency;
-  const sub = `${project.name} · period ended ${project.periodEnd} · ${cur}`;
+  const sub = `${project.name} · ${project.periodStart ? `period ${periodStartOf(project, 'cy')} to ${project.periodEnd}` : `period ended ${project.periodEnd}`} · ${cur}`;
   if (!cyResult.consolidatedIds.length)
     return (
       <section className="page">

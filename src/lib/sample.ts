@@ -212,3 +212,94 @@ export function downloadTemplate() {
 export function downloadSampleFile(s: SampleEntity) {
   XLSX.writeFile(sampleWorkbook(s), `${s.code}_${s.system}_trial_balance.xlsx`);
 }
+
+// ---------------------------------------------------------------- Xero-style report exports
+
+type Section = { title: string; codes: (c: string) => boolean };
+const BS_LAYOUT: { root: string; total: string; sections: Section[] }[] = [
+  {
+    root: 'Assets',
+    total: 'Total Assets',
+    sections: [
+      { title: 'Bank', codes: (c) => c === '1000' },
+      { title: 'Current Assets', codes: (c) => ['1100', '1150', '1200', '1300'].includes(c) },
+      { title: 'Fixed Assets', codes: (c) => ['1500', '1600'].includes(c) },
+      { title: 'Non-current Assets', codes: (c) => ['1650', '1700', '1710', '1720', '1800'].includes(c) },
+    ],
+  },
+  {
+    root: 'Liabilities',
+    total: 'Total Liabilities',
+    sections: [
+      { title: 'Current Liabilities', codes: (c) => c >= '2000' && c < '2500' },
+      { title: 'Non-current Liabilities', codes: (c) => c >= '2500' && c < '3000' },
+    ],
+  },
+];
+const PL_LAYOUT: Section[] = [
+  { title: 'Trading Income', codes: (c) => ['4000', '4050'].includes(c) },
+  { title: 'Cost of Sales', codes: (c) => c === '5000' },
+  { title: 'Other Income', codes: (c) => c > '4050' && c < '5000' },
+  { title: 'Operating Expenses', codes: (c) => c > '5000' },
+];
+
+/** Rows of a Xero "Balance Sheet" and "Profit and Loss" export (current + comparative column) for a sample company. */
+export function xeroReportRows(s: SampleEntity, accounts: GroupAccount[], periodEnd = '2026-12-31') {
+  const py = priorYearRows(s.rows, accounts);
+  const group = (code: string, name: string) => suggestMapping(code, name, accounts)?.code ?? '';
+  const typeOf = (g: string) => accounts.find((a) => a.code === g)?.type;
+  const lines = s.rows.map(([code, name, cy], i) => {
+    const g = group(code, name);
+    const t = typeOf(g);
+    const nat = (v: number) => (t === 'asset' || t === 'expense' ? v : -v);
+    return { name, g, t, cy: nat(cy), py: nat(py[i][2]) };
+  });
+  const year = periodEnd.slice(0, 4);
+  const head = (title: string) => [[title], [s.name], [title === 'Balance Sheet' ? `As at 31 December ${year}` : `For the year ended 31 December ${year}`], [], ['', `31 Dec ${year}`, `31 Dec ${+year - 1}`]];
+  const sum = (ls: typeof lines) => [ls.reduce((t, l) => t + l.cy, 0), ls.reduce((t, l) => t + l.py, 0)];
+
+  const pl: unknown[][] = head('Profit and Loss');
+  const plTotals: Record<string, number[]> = {};
+  for (const sec of PL_LAYOUT) {
+    const ls = lines.filter((l) => (l.t === 'revenue' || l.t === 'expense') && sec.codes(l.g));
+    plTotals[sec.title] = sum(ls);
+    if (ls.length) {
+      pl.push([sec.title], ...ls.map((l) => [l.name, l.cy, l.py]), [`Total ${sec.title}`, ...plTotals[sec.title]], []);
+    }
+    if (sec.title === 'Cost of Sales') pl.push(['Gross Profit', ...[0, 1].map((k) => plTotals['Trading Income'][k] - plTotals['Cost of Sales'][k])], []);
+  }
+  const profit = [0, 1].map((k) => plTotals['Trading Income'][k] - plTotals['Cost of Sales'][k] + plTotals['Other Income'][k] - plTotals['Operating Expenses'][k]);
+  pl.push(['Net Profit', ...profit]);
+
+  const bs: unknown[][] = head('Balance Sheet');
+  const rootTotals: number[][] = [];
+  for (const root of BS_LAYOUT) {
+    bs.push([root.root]);
+    const all: typeof lines = [];
+    for (const sec of root.sections) {
+      const ls = lines.filter((l) => sec.codes(l.g) && (l.t === 'asset' || l.t === 'liability'));
+      if (!ls.length) continue;
+      all.push(...ls);
+      bs.push([sec.title], ...ls.map((l) => [l.name, l.cy, l.py]), [`Total ${sec.title}`, ...sum(ls)], []);
+    }
+    rootTotals.push(sum(all));
+    bs.push([root.total, ...sum(all)], []);
+  }
+  bs.push(['Net Assets', ...[0, 1].map((k) => rootTotals[0][k] - rootTotals[1][k])], []);
+  const eq = lines.filter((l) => l.t === 'equity');
+  const eqRows = [['Current Year Earnings', ...profit], ...eq.map((l) => [l.name, l.cy, l.py])];
+  bs.push(['Equity'], ...eqRows, ['Total Equity', ...[0, 1].map((k) => eqRows.reduce((t, r) => t + (r[k + 1] as number), 0))]);
+  return { bs, pl };
+}
+
+export function downloadXeroReports(s: SampleEntity, accounts: GroupAccount[]) {
+  const { bs, pl } = xeroReportRows(s, accounts);
+  for (const [rows, title] of [
+    [bs, 'Balance_Sheet'],
+    [pl, 'Profit_and_Loss'],
+  ] as const) {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), title.replace(/_/g, ' '));
+    XLSX.writeFile(wb, `${s.name.replace(/[^\w]+/g, '_')}-${title}.xlsx`);
+  }
+}
