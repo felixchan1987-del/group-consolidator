@@ -1,4 +1,5 @@
 import type { GroupAccount } from '../types';
+import { DEFAULT_ACCOUNTS, accountByRole } from './coa';
 
 export type Confidence = 'high' | 'low';
 
@@ -79,6 +80,56 @@ function byCodeRange(code: string): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------- name similarity
+
+const STOP = new Set(['and', 'the', 'of', 'for', 'on', 'in', 'to', 'a', 'an', 'less', 'total', 'account', 'acc', 'a/c']);
+/** "Wages & Salaries" and "Wages and salaries" are the same name. */
+export function normName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[_·•.,:;()[\]'’"/\\\-–—]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+const tokens = (s: string) => new Set(normName(s).split(' ').filter((t) => t && !STOP.has(t)).map((t) => (t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t)));
+/** Dice similarity of the words in two account names (0 – 1). */
+export function similarity(a: string, b: string): number {
+  const x = tokens(a),
+    y = tokens(b);
+  if (!x.size || !y.size) return 0;
+  let both = 0;
+  x.forEach((t) => y.has(t) && both++);
+  return (2 * both) / (x.size + y.size);
+}
+
+/**
+ * The rules below point at the built-in chart (1000 Cash … 5500 Income tax). With an imported chart those codes
+ * mean something else or don't exist, so each rule target is translated to the imported account of the same kind
+ * (same type and statement section) whose name is closest to the line being mapped.
+ */
+export function makeResolver(accounts: GroupAccount[]) {
+  const byCode = new Map(accounts.map((a) => [a.code, a]));
+  return (code: string, lineName = ''): string | null => {
+    const hit = byCode.get(code);
+    const d = DEFAULT_ACCOUNTS.find((x) => x.code === code);
+    if (!d) return hit ? code : null;
+    if (hit && (normName(hit.name) === normName(d.name) || (d.role && hit.role === d.role))) return code;
+    if (d.role) return accountByRole(accounts, d.role)?.code ?? null;
+    let pool = accounts.filter((a) => a.type === d.type && a.section === d.section && !a.role);
+    if (!pool.length) pool = accounts.filter((a) => a.type === d.type && !a.role);
+    if (!pool.length) return null;
+    let best = pool[0],
+      score = 0;
+    for (const a of pool) {
+      const sc = similarity(lineName, a.name);
+      if (sc > score) [best, score] = [a, sc];
+    }
+    if (score > 0) return best.code;
+    return (pool.find((a) => /\b(other|sundry|general|misc)/i.test(a.name)) ?? pool[0]).code;
+  };
+}
+
 export function suggestMapping(
   code: string,
   name: string,
@@ -89,18 +140,42 @@ export function suggestMapping(
   const n = name.toLowerCase().replace(/[_·•]/g, ' ').replace(/\s+/g, ' ').trim();
   const remembered = memory?.[n];
   if (remembered && valid.has(remembered)) return { code: remembered, confidence: 'high' };
-  // exact name match with a group account
-  const exact = accounts.find((a) => a.name.toLowerCase() === n);
+  // same name as a group account (ignoring case, "&" vs "and", punctuation)
+  const nn = normName(name);
+  const exact = accounts.find((a) => normName(a.name) === nn);
   if (exact) return { code: exact.code, confidence: 'high' };
+  // same code as a group account with a similar name (companies sharing one chart of accounts)
+  const sameCode = code ? accounts.find((a) => a.code === code) : undefined;
+  if (sameCode && !isBuiltIn(sameCode) && similarity(name, sameCode.name) >= 0.3) return { code: sameCode.code, confidence: 'high' };
+  // nearly the same name
+  const near = closest(name, accounts);
+  if (near && near.score >= 0.75) return { code: near.code, confidence: 'high' };
+  const resolve = makeResolver(accounts);
   for (const r of RULES) {
     if (r.test.test(n)) {
-      const c = r.code === '__ic' ? icCode(n) ?? byCodeRange(code) : r.code;
-      if (c && valid.has(c)) return { code: c, confidence: 'high' };
+      const c0 = r.code === '__ic' ? icCode(n) ?? byCodeRange(code) : r.code;
+      const c = c0 && resolve(c0, name);
+      if (c) return { code: c, confidence: translatedConfidence(c0!, c, name, accounts) };
     }
   }
-  const fallback = byCodeRange(code);
-  if (fallback && valid.has(fallback)) return { code: fallback, confidence: 'low' };
+  if (near && near.score >= 0.5) return { code: near.code, confidence: 'low' };
+  const fb = byCodeRange(code);
+  const fallback = fb && resolve(fb, name);
+  if (fallback) return { code: fallback, confidence: 'low' };
   return null;
+}
+
+/** An account from the built-in chart: its generic name ("Revenue") is matched by the rules, not by similarity. */
+const isBuiltIn = (a: GroupAccount) => DEFAULT_ACCOUNTS.some((d) => d.code === a.code && normName(d.name) === normName(a.name));
+
+function closest(name: string, accounts: GroupAccount[]): { code: string; score: number } | null {
+  let best: { code: string; score: number } | null = null;
+  for (const a of accounts) {
+    if (isBuiltIn(a)) continue;
+    const sc = similarity(name, a.name);
+    if (sc > (best?.score ?? 0)) best = { code: a.code, score: sc };
+  }
+  return best;
 }
 
 /** Default group account for a report section such as "Assets › Fixed Assets" or "Less Operating Expenses". */
@@ -135,15 +210,16 @@ const TYPE_OF_SECTION: { test: RegExp; types: string[] }[] = [
   { test: /assets/, types: ['asset'] },
 ];
 
-export function sectionDefault(section: string, accounts: GroupAccount[], accept: (code: string) => boolean = () => true): string | null {
+export function sectionDefault(section: string, accounts: GroupAccount[], accept: (code: string) => boolean = () => true, lineName = ''): string | null {
   const parts = section.toLowerCase().split('›').map((x) => x.trim()).reverse(); // innermost first
-  const valid = new Set(accounts.map((a) => a.code));
+  const resolve = makeResolver(accounts);
   for (const p of parts)
     for (const r of SECTION_RULES) {
       if (!r.test.test(p)) continue;
-      if (valid.has(r.code) && accept(r.code)) return r.code;
-      const cp = COUNTERPART[r.code]; // e.g. "Lease Liability" under non-current liabilities: long-term borrowings
-      if (cp && valid.has(cp) && accept(cp)) return cp;
+      const c = resolve(r.code, lineName);
+      if (c && accept(c)) return c;
+      const cp = COUNTERPART[r.code] && resolve(COUNTERPART[r.code], lineName); // e.g. "Lease Liability" under non-current liabilities: long-term borrowings
+      if (cp && accept(cp)) return cp;
     }
   return null;
 }
@@ -173,6 +249,7 @@ export function suggestForLine(
   const n = line.name.toLowerCase().replace(/[_·•]/g, ' ').replace(/\s+/g, ' ').trim();
   const valid = new Set(accounts.map((a) => a.code));
   if (memory?.[n] && valid.has(memory[n])) return { code: memory[n], confidence: 'high' }; // what you mapped before wins
+  const resolve = makeResolver(accounts);
   const byName = suggestMapping(line.code, line.name, accounts, memory);
   if (!line.section) return byName;
   const parts = line.section.toLowerCase().split('›').map((x) => x.trim()).reverse(); // innermost first
@@ -201,15 +278,53 @@ export function suggestForLine(
 
   // intercompany balances: the section says which side they are on
   if (IC_NAME.test(n) && allowed) {
-    const ic = allowed.includes('liability') ? '2050' : allowed.includes('asset') ? '1150' : allowed.includes('revenue') ? '4050' : allowed.includes('expense') ? '5050' : null;
-    if (ic && valid.has(ic)) return { code: ic, confidence: 'high' };
+    const role = allowed.includes('liability') ? 'ic_pay' : allowed.includes('asset') ? 'ic_rec' : allowed.includes('revenue') ? 'ic_rev' : allowed.includes('expense') ? 'ic_exp' : null;
+    // an intercompany account of the imported chart with this name, else the group's intercompany account
+    const named = byNameIc(line.name, accounts, role);
+    if (named) return { code: named, confidence: 'high' };
+    const ic = role && accountByRole(accounts, role)?.code;
+    if (ic) return { code: ic, confidence: 'high' };
   }
   if (byName && byName.confidence === 'high' && fits(byName.code)) return byName;
   // right kind of account, wrong side of the current / non-current split: use its counterpart
-  const cp = byName && byName.confidence === 'high' && typeFits(byName.code) ? COUNTERPART[byName.code] : undefined;
-  if (cp && valid.has(cp) && fits(cp)) return { code: cp, confidence: 'high' };
-  const def = sectionDefault(line.section, accounts, fits);
+  const cp0 = byName && byName.confidence === 'high' && typeFits(byName.code) ? COUNTERPART[defaultKind(byName.code, accounts)] : undefined;
+  const cp = cp0 && resolve(cp0, line.name);
+  if (cp && fits(cp)) return { code: cp, confidence: byName!.confidence === 'high' ? translatedConfidence(cp0!, cp, line.name, accounts) : 'low' };
+  // the closest-named account that fits the section
+  let near: { code: string; score: number } | null = null;
+  for (const a of accounts) {
+    if (isBuiltIn(a)) continue;
+    const sc = similarity(line.name, a.name);
+    if (sc >= 0.5 && sc > (near?.score ?? 0) && fits(a.code)) near = { code: a.code, score: sc };
+  }
+  if (near) return { code: near.code, confidence: near.score >= 0.75 ? 'high' : 'low' };
+  const def = sectionDefault(line.section, accounts, fits, line.name);
   if (def) return { code: def, confidence: 'low' };
   if (byName && typeFits(byName.code)) return byName;
   return byName && !allowed ? byName : null;
+}
+
+/** Which built-in account an account corresponds to (itself for the built-in chart; by type and section otherwise). */
+function defaultKind(code: string, accounts: GroupAccount[]): string {
+  if (DEFAULT_ACCOUNTS.some((d) => d.code === code)) return code;
+  const a = accounts.find((x) => x.code === code);
+  const d = a && DEFAULT_ACCOUNTS.find((x) => x.type === a.type && x.section === a.section && !x.role);
+  return d?.code ?? code;
+}
+
+function byNameIc(name: string, accounts: GroupAccount[], role: string | null): string | null {
+  if (!role) return null;
+  const nn = normName(name);
+  return accounts.find((a) => a.role === role && normName(a.name) === nn)?.code ?? null;
+}
+
+/**
+ * A rule hit on the built-in chart is certain; translated onto an imported chart it is only as good as the name match
+ * ("Insurance" landing on the only expense account, "Wages and Salaries", needs checking).
+ */
+function translatedConfidence(ruleCode: string, code: string, name: string, accounts: GroupAccount[]): Confidence {
+  if (ruleCode === code) return 'high';
+  const a = accounts.find((x) => x.code === code);
+  if (!a || a.role) return 'high';
+  return similarity(name, a.name) >= 0.5 ? 'high' : 'low';
 }

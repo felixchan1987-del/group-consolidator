@@ -2,6 +2,9 @@ import { useRef, useState } from 'react';
 import type { PageProps } from '../App';
 import type { Project, SourceFile, TBLine } from '../types';
 import ImportDialog, { type ImportTarget } from './ImportDialog';
+import CoaImportDialog from './CoaImportDialog';
+import { looksLikeCoa } from '../lib/coaImport';
+import { DEFAULT_ACCOUNTS } from '../lib/coa';
 import { readWorkbook, type ParsedSheet } from '../lib/importer';
 import { suggestForLine } from '../lib/automap';
 import { autoTagCounterparties } from '../lib/counterparty';
@@ -14,6 +17,8 @@ import type { Period } from '../types';
 interface Pending {
   fileName: string;
   sheets: ParsedSheet[];
+  /** a chart of accounts rather than a company's figures */
+  coa?: boolean;
 }
 
 export function mappingMemory(p: Project): Record<string, string> {
@@ -33,16 +38,31 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
   const [total, setTotal] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const coaRef = useRef<HTMLInputElement>(null);
+  const builtInChart = project.accounts.every((a) => DEFAULT_ACCOUNTS.some((d) => d.code === a.code && d.name === a.name));
+  const handleCoaFile = async (f: File) => {
+    try {
+      const sheets = readWorkbook(await f.arrayBuffer());
+      setErrors([]);
+      setTotal(1);
+      setQueue((q) => [{ fileName: f.name, sheets, coa: true }, ...q]);
+    } catch (e) {
+      setErrors([`${f.name}: ${(e as Error).message}`]);
+    }
+  };
   const handleFiles = async (files: FileList | File[]) => {
     const pend: Pending[] = [];
     const errs: string[] = [];
     for (const f of Array.from(files)) {
       try {
-        pend.push({ fileName: f.name, sheets: readWorkbook(await f.arrayBuffer()) });
+        const sheets = readWorkbook(await f.arrayBuffer());
+        pend.push({ fileName: f.name, sheets, coa: sheets.some((sh) => looksLikeCoa(sh.rows)) });
       } catch (e) {
         errs.push(`${f.name}: ${(e as Error).message}`);
       }
     }
+    // a chart of accounts goes first, so the companies' lines are mapped to it
+    pend.sort((a, b) => Number(!!b.coa) - Number(!!a.coa));
     setErrors(errs);
     setTotal(pend.length);
     setQueue((q) => [...q, ...pend]);
@@ -145,6 +165,33 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
           {e}
         </div>
       ))}
+
+      <div className="card">
+        <div className="card-h">
+          <h3>Group chart of accounts</h3>
+          <div className="row">
+            <button className="btn sm" onClick={() => coaRef.current?.click()}>
+              Import chart of accounts…
+            </button>
+            <input ref={coaRef} type="file" hidden accept=".xlsx,.xls,.csv,.ods" onChange={(e) => { if (e.target.files?.[0]) handleCoaFile(e.target.files[0]); e.target.value = ''; }} />
+            <button className="btn sm ghost" onClick={() => go('mapping')}>
+              View / edit
+            </button>
+          </div>
+        </div>
+        <div className="card-b small">
+          {builtInChart ? (
+            <span className="muted">
+              Using the built-in chart ({project.accounts.length} accounts). To consolidate into your own accounts, import a chart of accounts first — e.g. Xero <i>Accounting › Chart of accounts › Export</i>, or any Excel/CSV list with code, name and type — then every company's lines with the same account names are mapped to it automatically.
+            </span>
+          ) : (
+            <span>
+              <b>{project.accounts.length}</b> accounts
+              {project.chartSource ? <> · imported from <b>{project.chartSource}</b></> : ''}. Companies' lines are mapped to these accounts by name (and code, when they share the chart).
+            </span>
+          )}
+        </div>
+      </div>
 
       {project.entities.length === 0 ? (
         <div className="card">
@@ -260,7 +307,25 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
         </div>
       )}
 
-      {current && (
+      {current?.coa && (
+        <CoaImportDialog
+          key={current.fileName + queue.length}
+          fileName={current.fileName}
+          sheets={current.sheets}
+          project={project}
+          queueInfo={total > 1 ? `File ${total - queue.length + 1} of ${total} — becomes the group chart of accounts` : undefined}
+          onApply={(next) => {
+            update((d) => {
+              d.accounts = next.accounts;
+              d.entities = next.entities;
+              d.chartSource = current.fileName;
+            });
+            setQueue((q) => q.slice(1));
+          }}
+          onClose={() => setQueue((q) => q.slice(1))}
+        />
+      )}
+      {current && !current.coa && (
         <ImportDialog
           key={current.fileName + queue.length}
           fileName={current.fileName}

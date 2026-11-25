@@ -91,12 +91,25 @@ export interface ParsedSheet {
 }
 
 export function readWorkbook(data: ArrayBuffer): ParsedSheet[] {
-  const wb = XLSX.read(data, { type: 'array', cellDates: true, cellFormula: true });
+  const head = new Uint8Array(data.slice(0, 4));
+  // text files (CSV): keep codes such as "090" as written; other numbers are converted as usual
+  const isText = !(head[0] === 0x50 && head[1] === 0x4b) && !(head[0] === 0xd0 && head[1] === 0xcf) && !(head[0] === 0x3c && head[1] === 0x3f);
+  const wb = XLSX.read(data, { type: 'array', cellDates: true, cellFormula: true, ...(isText ? { raw: true } : {}) });
   return wb.SheetNames.map((name) => {
     // totals saved as formulas without results (Xero) would otherwise read as 0
     evaluateFormulas(wb.Sheets[name]);
-    return { name, rows: XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: false }) };
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: false });
+    return { name, rows: isText ? rows.map((r) => r.map(textCell)) : rows };
   });
+}
+
+/** A CSV cell: plain numbers become numbers, except codes with leading zeros ("090"). */
+function textCell(v: unknown): unknown {
+  if (typeof v !== 'string') return v;
+  const t = v.trim();
+  if (/^-?0\d/.test(t)) return v;
+  if (/^-?\d{1,3}(,\d{3})*(\.\d+)?$|^-?\d+(\.\d+)?$/.test(t)) return Number(t.replace(/,/g, ''));
+  return v;
 }
 
 const norm = (v: unknown) =>

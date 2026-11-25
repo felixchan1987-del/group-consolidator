@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import CoaImportDialog from './CoaImportDialog';
+import { readWorkbook, type ParsedSheet } from '../lib/importer';
 import type { PageProps } from '../App';
 import type { AccountRole, AccountType, GroupAccount } from '../types';
 import { suggestForLine } from '../lib/automap';
@@ -33,7 +35,7 @@ export function AccountSelect({ accounts, value, onChange, placeholder = '— un
 export default function MappingPage({ project, update, result, prior, go }: PageProps) {
   const ents = project.entities.filter((e) => e.lines.length);
   const [entId, setEntId] = useState(ents[0]?.id ?? '');
-  const [onlyUnmapped, setOnlyUnmapped] = useState(false);
+  const [show, setShow] = useState<'all' | 'unmapped' | 'review'>('all');
   const [q, setQ] = useState('');
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState('');
@@ -62,7 +64,13 @@ export default function MappingPage({ project, update, result, prior, go }: Page
       </section>
     );
 
-  const visible = rows.filter((r) => (!onlyUnmapped || !e.mapping[r.key]) && (!q || `${r.code} ${r.name}`.toLowerCase().includes(q.toLowerCase())));
+  const needsReview = (r: (typeof rows)[number]) => {
+    const cur = e.mapping[r.key];
+    if (!cur) return true;
+    const sug = suggestForLine(r, project.accounts);
+    return !!sug && sug.code === cur && sug.confidence === 'low';
+  };
+  const visible = rows.filter((r) => (show === 'all' || (show === 'unmapped' ? !e.mapping[r.key] : needsReview(r))) && (!q || `${r.code} ${r.name}`.toLowerCase().includes(q.toLowerCase())));
   const setMap = (keys: string[], code: string) =>
     update((d) => {
       const x = d.entities.find((y) => y.id === e.id)!;
@@ -133,9 +141,11 @@ export default function MappingPage({ project, update, result, prior, go }: Page
 
       <div className="row">
         <input placeholder="Search code or name…" value={q} onChange={(ev) => setQ(ev.target.value)} style={{ width: 260 }} />
-        <label className="check small">
-          <input type="checkbox" checked={onlyUnmapped} onChange={(ev) => setOnlyUnmapped(ev.target.checked)} /> Only unmapped
-        </label>
+        <select value={show} onChange={(ev) => setShow(ev.target.value as typeof show)} aria-label="Show">
+          <option value="all">All lines</option>
+          <option value="unmapped">Only unmapped</option>
+          <option value="review">To review: unmapped and guesses</option>
+        </select>
         <span className="small muted">
           {rows.length} accounts · {unmappedTotal} unmapped lines across all entities
         </span>
@@ -231,14 +241,50 @@ function CoaEditor({ project, update }: Pick<PageProps, 'project' | 'update'>) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<GroupAccount>({ code: '', name: '', type: 'expense', section: 'Operating expenses' });
   const used = new Set(project.entities.flatMap((e) => Object.values(e.mapping)));
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [coaFile, setCoaFile] = useState<{ fileName: string; sheets: ParsedSheet[] } | null>(null);
   return (
     <div className="card">
       <div className="card-h">
-        <h3>Group chart of accounts ({project.accounts.length} accounts)</h3>
-        <button className="btn sm" onClick={() => setOpen(!open)}>
-          {open ? 'Hide' : 'Edit chart of accounts'}
-        </button>
+        <h3>
+          Group chart of accounts ({project.accounts.length} accounts{project.chartSource ? ` · from ${project.chartSource}` : ''})
+        </h3>
+        <div className="row">
+          <button className="btn sm" onClick={() => fileRef.current?.click()}>
+            Import chart of accounts…
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            hidden
+            accept=".xlsx,.xls,.csv,.ods"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) setCoaFile({ fileName: f.name, sheets: readWorkbook(await f.arrayBuffer()) });
+            }}
+          />
+          <button className="btn sm" onClick={() => setOpen(!open)}>
+            {open ? 'Hide' : 'Edit chart of accounts'}
+          </button>
+        </div>
       </div>
+      {coaFile && (
+        <CoaImportDialog
+          fileName={coaFile.fileName}
+          sheets={coaFile.sheets}
+          project={project}
+          onApply={(next) => {
+            update((d) => {
+              d.accounts = next.accounts;
+              d.entities = next.entities;
+              d.chartSource = coaFile.fileName;
+            });
+            setCoaFile(null);
+          }}
+          onClose={() => setCoaFile(null)}
+        />
+      )}
       {open && (
         <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="row">

@@ -153,6 +153,8 @@ export interface Project {
   /** first day of the current period when it is not the 12 months to the period end (year-to-date reporting) */
   periodStart?: string;
   presentationCurrency: string;
+  /** file the group chart of accounts was imported from */
+  chartSource?: string;
   parentId: string | null;
   entities: Entity[];
   holdings: Holding[];
