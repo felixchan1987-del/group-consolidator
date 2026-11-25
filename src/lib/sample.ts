@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import type { Entity, Project } from '../types';
+import type { Entity, GroupAccount, Project } from '../types';
 import { suggestMapping } from './automap';
 import { emptyProject, lineKey, newEntity, uid } from './util';
 
@@ -13,6 +13,7 @@ export interface SampleEntity {
   system: string;
   rows: Row[];
   rates?: { closing: number; average: number; historical: number };
+  ratesPrior?: { closing: number; average: number; historical: number };
 }
 
 export const SAMPLE: SampleEntity[] = [
@@ -76,6 +77,7 @@ export const SAMPLE: SampleEntity[] = [
     country: 'Germany',
     system: 'sap',
     rates: { closing: 1.1, average: 1.08, historical: 1.05 },
+    ratesPrior: { closing: 1.05, average: 1.07, historical: 1.05 },
     rows: [
       ['113100', 'Bank Deutsche Bank', 150000],
       ['140000', 'Trade receivables', 120000],
@@ -124,7 +126,14 @@ export function buildSampleProject(): Project {
     if (s.rates) e.rates = { ...s.rates };
     const srcId = uid('src');
     e.sources.push({ id: srcId, fileName: `${s.code}_trial_balance.xlsx`, sheet: 'TB', system: s.system, importedAt: new Date().toISOString(), lineCount: s.rows.length });
-    e.lines = s.rows.map(([code, name, amount]) => ({ id: uid('ln'), code, name, amount, sign: 'dr' as const, sourceId: srcId }));
+    if (s.ratesPrior) e.ratesPrior = { ...s.ratesPrior };
+    const pySrc = uid('src');
+    const py = priorYearRows(s.rows, p.accounts);
+    e.sources.push({ id: pySrc, fileName: `${s.code}_trial_balance_prior_year.xlsx`, sheet: 'TB', system: s.system, importedAt: new Date().toISOString(), lineCount: py.length, period: 'py' });
+    e.lines = [
+      ...s.rows.map(([code, name, amount]) => ({ id: uid('ln'), code, name, amount, sign: 'dr' as const, sourceId: srcId })),
+      ...py.map(([code, name, amount]) => ({ id: uid('ln'), code, name, amount, sign: 'dr' as const, sourceId: pySrc, period: 'py' as const })),
+    ];
     for (const l of e.lines) {
       const sug = suggestMapping(l.code, l.name, p.accounts);
       if (sug) e.mapping[lineKey(l)] = sug.code;
@@ -135,11 +144,36 @@ export function buildSampleProject(): Project {
   const [apex, beacon, cobalt, delta] = ents;
   p.parentId = apex.id;
   p.holdings = [
-    { id: uid('h'), holderId: apex.id, investeeId: beacon.id, pct: 80, cost: 800000, acqEquity: 900000, acqDate: '2023-01-01' },
-    { id: uid('h'), holderId: beacon.id, investeeId: cobalt.id, pct: 60, cost: 600000, acqEquity: 577500, acqDate: '2024-01-01' },
-    { id: uid('h'), holderId: apex.id, investeeId: delta.id, pct: 30, cost: 300000, acqEquity: 800000, acqDate: '2022-07-01' },
+    { id: uid('h'), holderId: apex.id, investeeId: beacon.id, pct: 80, cost: 800000, acqEquity: 800000, acqDate: '2023-01-01' },
+    { id: uid('h'), holderId: beacon.id, investeeId: cobalt.id, pct: 60, cost: 600000, acqEquity: 525000, acqDate: '2024-01-01' },
+    { id: uid('h'), holderId: apex.id, investeeId: delta.id, pct: 30, cost: 300000, acqEquity: 700000, acqDate: '2022-07-01' },
   ];
   return p;
+}
+
+/**
+ * Derives a plausible, balanced prior-year trial balance from the current one:
+ * P&L at 90%, working balances at 95%, capital / investments / intercompany unchanged,
+ * opening retained earnings rolled back by the prior-year profit and cash as the balancing figure.
+ */
+export function priorYearRows(rows: Row[], accounts: GroupAccount[]): Row[] {
+  const typeOf = (code: string, name: string) => {
+    const s = suggestMapping(code, name, accounts);
+    return { group: s?.code ?? '', type: accounts.find((a) => a.code === s?.code)?.type };
+  };
+  const out: Row[] = rows.map(([code, name, amt]) => {
+    const { group, type } = typeOf(code, name);
+    if (type === 'revenue' || type === 'expense') return [code, name, Math.round(amt * 0.9)];
+    if (type === 'equity' || ['1700', '1710', '1150', '2050', '1000'].includes(group)) return [code, name, amt];
+    return [code, name, Math.round(amt * 0.95)];
+  });
+  const pyProfit = -out.filter(([c, n]) => ['revenue', 'expense'].includes(typeOf(c, n).type ?? '')).reduce((t, [, , a]) => t + a, 0);
+  const re = out.findIndex(([c, n]) => typeOf(c, n).group === '3200');
+  if (re >= 0) out[re] = [out[re][0], out[re][1], out[re][2] + pyProfit];
+  const cash = out.findIndex(([c, n]) => typeOf(c, n).group === '1000');
+  const diff = out.reduce((t, [, , a]) => t + a, 0);
+  out[cash] = [out[cash][0], out[cash][1], out[cash][2] - diff];
+  return out;
 }
 
 /** Sample Excel files in the layouts different accounting systems export, to try the importer. */

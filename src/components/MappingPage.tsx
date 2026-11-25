@@ -29,7 +29,7 @@ export function AccountSelect({ accounts, value, onChange, placeholder = '— un
   );
 }
 
-export default function MappingPage({ project, update, result, go }: PageProps) {
+export default function MappingPage({ project, update, result, prior, go }: PageProps) {
   const ents = project.entities.filter((e) => e.lines.length);
   const [entId, setEntId] = useState(ents[0]?.id ?? '');
   const [onlyUnmapped, setOnlyUnmapped] = useState(false);
@@ -41,12 +41,13 @@ export default function MappingPage({ project, update, result, go }: PageProps) 
 
   const rows = useMemo(() => {
     if (!e) return [];
-    const m = new Map<string, { key: string; code: string; name: string; amount: number }>();
+    const m = new Map<string, { key: string; code: string; name: string; amount: number; prior: number }>();
     for (const l of e.lines) {
       const k = lineKey(l);
       const type = accMap.get(e.mapping[k])?.type;
-      const r = m.get(k) ?? { key: k, code: l.code, name: l.name, amount: 0 };
-      r.amount += signedAmount(l.amount, l.sign, type);
+      const r = m.get(k) ?? { key: k, code: l.code, name: l.name, amount: 0, prior: 0 };
+      if ((l.period ?? 'cy') === 'py') r.prior += signedAmount(l.amount, l.sign, type);
+      else r.amount += signedAmount(l.amount, l.sign, type);
       m.set(k, r);
     }
     return [...m.values()].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }) || a.name.localeCompare(b.name));
@@ -81,7 +82,8 @@ export default function MappingPage({ project, update, result, go }: PageProps) 
         }
     });
 
-  const unmappedTotal = Object.values(result.translation).reduce((s, t) => s + t.unmappedCount, 0);
+  const unmappedTotal = [result, prior].reduce((s, r) => s + (r ? Object.values(r.translation).reduce((x, t) => x + t.unmappedCount, 0) : 0), 0);
+  const showPrior = rows.some((r) => r.prior !== 0);
 
   return (
     <section className="page">
@@ -108,7 +110,7 @@ export default function MappingPage({ project, update, result, go }: PageProps) 
 
       <div className="tabs">
         {ents.map((x) => {
-          const un = result.translation[x.id]?.unmappedCount ?? 0;
+          const un = (result.translation[x.id]?.unmappedCount ?? 0) + (prior?.translation[x.id]?.unmappedCount ?? 0);
           return (
             <button key={x.id} className={`tab ${x.id === e.id ? 'active' : ''}`} onClick={() => { setEntId(x.id); setSel(new Set()); }}>
               {x.name} {un ? <span className="badge warn">{un}</span> : <span className="badge ok">✓</span>}
@@ -148,7 +150,8 @@ export default function MappingPage({ project, update, result, go }: PageProps) 
               </th>
               <th>Local code</th>
               <th>Local account name</th>
-              <th className="num">Balance ({e.currency}, Dr+ / Cr−)</th>
+              <th className="num">Current ({e.currency}, Dr+ / Cr−)</th>
+              {showPrior && <th className="num">Prior period</th>}
               <th style={{ width: 340 }}>Group account</th>
               <th>Suggestion</th>
             </tr>
@@ -165,6 +168,7 @@ export default function MappingPage({ project, update, result, go }: PageProps) 
                   <td className="small">{r.code}</td>
                   <td>{r.name}</td>
                   <td className="num">{fmt(r.amount, 2)}</td>
+                  {showPrior && <td className="num muted">{fmt(r.prior, 2)}</td>}
                   <td>
                     <AccountSelect accounts={project.accounts} value={cur} onChange={(v) => setMap([r.key], v)} />
                   </td>

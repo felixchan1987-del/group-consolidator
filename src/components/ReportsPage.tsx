@@ -4,10 +4,13 @@ import { balanceSheet, incomeStatement, type StmtLine } from '../lib/statements'
 import { exportConsolidation } from '../lib/exportXlsx';
 import { ADJ_LABELS } from '../lib/consolidate';
 import { fmt, pct } from '../lib/util';
+import { periodEndOf } from '../lib/periods';
+import type { Period } from '../types';
 
 type Tab = 'bs' | 'is' | 'ws' | 'nci' | 'jr' | 'checks';
 
-function Statement({ lines, title, sub }: { lines: StmtLine[]; title: string; sub: string }) {
+function Statement({ lines, title, sub, heads }: { lines: StmtLine[]; title: string; sub: string; heads: [string, string] }) {
+  const hasPy = lines.some((l) => l.prior !== undefined);
   return (
     <div>
       <h3>{title}</h3>
@@ -15,11 +18,19 @@ function Statement({ lines, title, sub }: { lines: StmtLine[]; title: string; su
         {sub}
       </p>
       <table className="stmt">
+        <thead>
+          <tr>
+            <th />
+            <th className="num">{heads[0]}</th>
+            {hasPy && <th className="num">{heads[1]}</th>}
+          </tr>
+        </thead>
         <tbody>
           {lines.map((l, i) => (
             <tr key={i} className={l.kind}>
               <td>{l.label}</td>
               <td className="num">{l.kind === 'heading' ? '' : fmt(l.value)}</td>
+              {hasPy && <td className="num muted">{l.kind === 'heading' ? '' : fmt(l.prior ?? 0)}</td>}
             </tr>
           ))}
         </tbody>
@@ -28,25 +39,30 @@ function Statement({ lines, title, sub }: { lines: StmtLine[]; title: string; su
   );
 }
 
-export default function ReportsPage({ project, result: r }: PageProps) {
+export default function ReportsPage({ project, result: cyResult, prior }: PageProps) {
   const [tab, setTab] = useState<Tab>('bs');
+  const [per, setPer] = useState<Period>('cy');
+  // detail tabs (worksheet, NCI, journals) show one period at a time
+  const r = per === 'py' && prior ? prior : cyResult;
   const [showZero, setShowZero] = useState(false);
   const cur = project.presentationCurrency;
   const sub = `${project.name} · period ended ${project.periodEnd} · ${cur}`;
-  if (!r.consolidatedIds.length)
+  if (!cyResult.consolidatedIds.length)
     return (
       <section className="page">
         <h2>Consolidated reports</h2>
         <div className="empty">Upload reports and select the parent entity first.</div>
       </section>
     );
-  const bs = balanceSheet(r);
-  const is = incomeStatement(r);
+  const bs = balanceSheet(cyResult, prior);
+  const is = incomeStatement(cyResult, prior);
+  const heads: [string, string] = [periodEndOf(project, 'cy'), periodEndOf(project, 'py')];
   const ta = bs.find((l) => l.label === 'TOTAL ASSETS')?.value ?? 0;
   const eqOwners = bs.find((l) => l.label === 'Equity attributable to owners of the parent')?.value ?? 0;
-  const goodwill = r.subsidiaries.reduce((s, x) => s + x.goodwill, 0);
-  const errors = r.checks.filter((c) => c.level === 'error');
-  const warns = r.checks.filter((c) => c.level === 'warn');
+  const goodwill = cyResult.subsidiaries.reduce((s, x) => s + x.goodwill, 0);
+  const allChecks = [...cyResult.checks, ...(prior?.checks ?? []).map((c) => ({ ...c, message: `Prior period: ${c.message}` }))];
+  const errors = allChecks.filter((c) => c.level === 'error');
+  const warns = allChecks.filter((c) => c.level === 'warn');
   const accName = new Map(r.accounts.map((a) => [a.code, a.name]));
 
   return (
@@ -55,10 +71,10 @@ export default function ReportsPage({ project, result: r }: PageProps) {
         <div>
           <h2>Consolidated reports</h2>
           <p className="muted">
-            {r.consolidatedIds.length} entities fully consolidated, {r.associates.length} equity-accounted. Everything recalculates live as you change data, structure or mappings.
+            {cyResult.consolidatedIds.length} entities fully consolidated, {cyResult.associates.length} equity-accounted{prior ? ', with comparatives' : ''}. Everything recalculates live as you change data, structure or mappings.
           </p>
         </div>
-        <button className="btn primary" onClick={() => exportConsolidation(project, r)}>
+        <button className="btn primary" onClick={() => exportConsolidation(project, cyResult, prior)}>
           ⬇ Export to Excel
         </button>
       </div>
@@ -76,8 +92,12 @@ export default function ReportsPage({ project, result: r }: PageProps) {
       <div className="kpis">
         <div className="kpi"><div className="l">Total assets</div><div className="v">{fmt(ta)}</div></div>
         <div className="kpi"><div className="l">Equity attributable to owners</div><div className="v">{fmt(eqOwners)}</div></div>
-        <div className="kpi"><div className="l">Non-controlling interests</div><div className="v">{fmt(r.nciTotal)}</div></div>
-        <div className="kpi"><div className="l">Profit for the period</div><div className="v">{fmt(r.profit.total)}</div></div>
+        <div className="kpi"><div className="l">Non-controlling interests</div><div className="v">{fmt(cyResult.nciTotal)}</div></div>
+        <div className="kpi">
+          <div className="l">Profit for the period</div>
+          <div className="v">{fmt(cyResult.profit.total)}</div>
+          {prior && <div className="small muted">Prior: {fmt(prior.profit.total)}{prior.profit.total ? ` (${cyResult.profit.total >= prior.profit.total ? '+' : ''}${(((cyResult.profit.total - prior.profit.total) / Math.abs(prior.profit.total)) * 100).toFixed(1)}%)` : ''}</div>}
+        </div>
         <div className="kpi"><div className="l">Goodwill</div><div className="v">{fmt(goodwill)}</div></div>
       </div>
 
@@ -98,8 +118,18 @@ export default function ReportsPage({ project, result: r }: PageProps) {
         ))}
       </div>
 
-      {tab === 'bs' && <Statement lines={bs} title="Consolidated statement of financial position" sub={sub} />}
-      {tab === 'is' && <Statement lines={is} title="Consolidated statement of profit or loss" sub={sub} />}
+      {prior && ['ws', 'nci', 'jr'].includes(tab) && (
+        <div className="row">
+          <span className="small muted">Period:</span>
+          {(['cy', 'py'] as Period[]).map((x) => (
+            <button key={x} className={`btn sm ${per === x ? 'primary' : ''}`} onClick={() => setPer(x)}>
+              {x === 'cy' ? 'Current' : 'Prior'} ({periodEndOf(project, x)})
+            </button>
+          ))}
+        </div>
+      )}
+      {tab === 'bs' && <Statement lines={bs} heads={heads} title="Consolidated statement of financial position" sub={sub} />}
+      {tab === 'is' && <Statement lines={is} heads={heads} title="Consolidated statement of profit or loss" sub={sub} />}
 
       {tab === 'ws' && (
         <>
@@ -304,7 +334,7 @@ export default function ReportsPage({ project, result: r }: PageProps) {
 
       {tab === 'checks' && (
         <ul className="checks">
-          {r.checks.map((c, i) => (
+          {allChecks.map((c, i) => (
             <li key={i}>
               <span className={`badge ${c.level === 'error' ? 'err' : c.level === 'warn' ? 'warn' : 'ok'}`}>{c.level === 'error' ? 'Error' : c.level === 'warn' ? 'Warning' : 'OK'}</span>
               <span>{c.message}</span>

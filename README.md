@@ -6,7 +6,7 @@ A browser-based tool for consolidating financial statements across a group of co
 2. **Build the group structure**: who owns what percentage of whom (direct, indirect, multiple holders).
 3. **Map** each company's local chart of accounts to a group chart of accounts (auto-suggested).
 4. **Translate & adjust**: FX rates per entity, automatic intercompany eliminations, manual journals.
-5. **Report**: consolidated balance sheet, income statement, consolidation worksheet, goodwill & NCI schedule, elimination journals, checks. Export everything to Excel.
+5. **Report**: consolidated balance sheet and income statement with comparatives, consolidation worksheet, goodwill & NCI schedule, elimination journals, checks. Export everything to Excel.
 
 All processing happens in the browser. No files are sent to a server, and the project autosaves to the browser's local storage. You can save and open the project as a JSON file.
 
@@ -26,6 +26,12 @@ Click **Load sample** in the top bar to load a four-company demo group: a US par
 Column detection is automatic: it finds the header row, code/name/debit/credit/balance columns, and combined "1000 · Cash" account cells. Presets add hints for:
 Xero, QuickBooks, SAP (S/4HANA, Business One), Oracle NetSuite, Sage, MYOB, Microsoft Dynamics 365, and formatted P&L / balance sheet reports with natural signs.
 Any other layout works through manual column selection in the import dialog. Several files per company (e.g. separate BS and P&L) are appended.
+
+## Periods and comparatives
+
+Each imported file is tagged as **current** or **prior (comparative)** period. The import dialog guesses this from the file name, for example "prior", "PY" or last year's year. Each entity has its own prior-period exchange rates, and manual journals belong to one period.
+The engine consolidates each period on its own, with that period's rates and journals. Statements show both columns, and the worksheet, NCI and journal views switch between periods.
+**Roll forward to next period** (Upload page) turns current-period data into the comparatives, drops the old comparatives and moves the period end on one year.
 
 ## Consolidation logic
 

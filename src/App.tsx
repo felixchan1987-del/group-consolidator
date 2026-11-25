@@ -4,6 +4,7 @@ import { consolidate, type ConsolidationResult } from './lib/consolidate';
 import { downloadJson, useProject } from './lib/store';
 import { buildSampleProject } from './lib/sample';
 import { CURRENCIES, emptyProject } from './lib/util';
+import { hasPrior, projectForPeriod } from './lib/periods';
 import UploadPage from './components/UploadPage';
 import StructurePage from './components/StructurePage';
 import MappingPage from './components/MappingPage';
@@ -13,7 +14,10 @@ import ReportsPage from './components/ReportsPage';
 export interface PageProps {
   project: Project;
   update: (recipe: (d: Project) => void) => void;
+  /** current period */
   result: ConsolidationResult;
+  /** comparative period, when prior-period data has been imported */
+  prior: ConsolidationResult | null;
   go: (step: Step) => void;
 }
 
@@ -30,7 +34,8 @@ const STEPS: { id: Step; label: string }[] = [
 export default function App() {
   const { project, setProject, update, savedAt } = useProject();
   const [step, setStep] = useState<Step>('upload');
-  const result = useMemo(() => consolidate(project), [project]);
+  const result = useMemo(() => consolidate(projectForPeriod(project, 'cy')), [project]);
+  const prior = useMemo(() => (hasPrior(project) ? consolidate(projectForPeriod(project, 'py')) : null), [project]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const status = (s: Step) => {
@@ -41,11 +46,11 @@ export default function App() {
       case 'structure':
         return project.parentId ? <span className="badge ok">✓</span> : ents ? <span className="badge warn">!</span> : null;
       case 'mapping': {
-        const un = Object.values(result.translation).reduce((s, t) => s + t.unmappedCount, 0);
+        const un = [result, prior].reduce((s, r) => s + (r ? Object.values(r.translation).reduce((x, t) => x + t.unmappedCount, 0) : 0), 0);
         return ents ? un ? <span className="badge warn">{un}</span> : <span className="badge ok">✓</span> : null;
       }
       case 'reports': {
-        const errs = result.checks.filter((c) => c.level === 'error').length;
+        const errs = result.checks.filter((c) => c.level === 'error').length + (prior?.checks.filter((c) => c.level === 'error').length ?? 0);
         return ents ? errs ? <span className="badge err">{errs}</span> : <span className="badge ok">✓</span> : null;
       }
     }
@@ -62,7 +67,7 @@ export default function App() {
     }
   };
 
-  const props: PageProps = { project, update, result, go: setStep };
+  const props: PageProps = { project, update, result, prior, go: setStep };
 
   return (
     <>

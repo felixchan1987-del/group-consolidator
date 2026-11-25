@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Project, SignMode, SourceFile, TBLine } from '../types';
+import type { Period, Project, SignMode, SourceFile, TBLine } from '../types';
+import { periodEndOf } from '../lib/periods';
 import { COL_ROLE_LABELS, SYSTEMS, detectColumns, detectHeaderRow, extractLines, guessEntityFromSheet, guessEntityName, type ColRole, type ParsedSheet } from '../lib/importer';
 import { CURRENCIES, fmt, uid } from '../lib/util';
 
@@ -41,6 +42,11 @@ export default function ImportDialog({ fileName, sheets, project, queueInfo, onI
   const [newName, setNewName] = useState(guessed);
   const [currency, setCurrency] = useState(project.presentationCurrency);
   const [replace, setReplace] = useState(false);
+  const [period, setPeriod] = useState<Period>(() => {
+    // "prior", "comparative" or last year's year-end in the file name -> prior period
+    const prevYear = periodEndOf(project, 'py').slice(0, 4);
+    return /prior|comparative|\bpy\b|last.?year/i.test(fileName) || new RegExp(`(^|\\D)${prevYear}(\\D|$)`).test(fileName) ? 'py' : 'cy';
+  });
 
   useEffect(() => {
     const hr = detectHeaderRow(rows, preset);
@@ -60,8 +66,8 @@ export default function ImportDialog({ fileName, sheets, project, queueInfo, onI
   const preview = rows.slice(previewFrom, headerRow + 16);
 
   const doImport = () => {
-    const src: SourceFile = { id: sourceId, fileName, sheet: sheets[sheetIdx].name, system: preset?.label ?? system, importedAt: new Date().toISOString(), lineCount: res.lines.length };
-    onImport({ entityId: target === 'new' ? null : target, newName: newName.trim() || guessed, currency, replace }, res.lines, src);
+    const src: SourceFile = { id: sourceId, fileName, sheet: sheets[sheetIdx].name, system: preset?.label ?? system, importedAt: new Date().toISOString(), lineCount: res.lines.length, period };
+    onImport({ entityId: target === 'new' ? null : target, newName: newName.trim() || guessed, currency, replace }, res.lines.map((l) => ({ ...l, period })), src);
   };
 
   return (
@@ -77,7 +83,14 @@ export default function ImportDialog({ fileName, sheets, project, queueInfo, onI
           </button>
         </div>
         <div className="modal-b">
-          <div className="grid cols-3">
+          <div className="grid cols-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+            <label className="field">
+              Period
+              <select value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
+                <option value="cy">Current period (to {periodEndOf(project, 'cy')})</option>
+                <option value="py">Prior period / comparative (to {periodEndOf(project, 'py')})</option>
+              </select>
+            </label>
             <label className="field">
               Source accounting system
               <select value={system} onChange={(e) => setSystem(e.target.value)}>
@@ -189,7 +202,7 @@ export default function ImportDialog({ fileName, sheets, project, queueInfo, onI
                 </div>
               ) : (
                 <label className="check small">
-                  <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} /> Replace existing lines (otherwise append)
+                  <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} /> Replace this entity's lines for the selected period (otherwise append)
                 </label>
               )}
             </label>

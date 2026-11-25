@@ -3,27 +3,37 @@ import type { Project } from '../types';
 import type { ConsolidationResult } from './consolidate';
 import { METHOD_SHORT } from './structure';
 import { balanceSheet, incomeStatement, type StmtLine } from './statements';
+import { periodEndOf } from './periods';
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 function stmtSheet(title: string, p: Project, lines: StmtLine[]) {
-  const aoa: unknown[][] = [[p.name], [title], [`Period ended ${p.periodEnd} — ${p.presentationCurrency}`], []];
-  for (const l of lines) aoa.push([l.kind === 'line' ? `   ${l.label}` : l.label, l.kind === 'heading' ? '' : r2(l.value)]);
+  const hasPy = lines.some((l) => l.prior !== undefined);
+  const aoa: unknown[][] = [[p.name], [title], [`Period ended ${p.periodEnd} — ${p.presentationCurrency}`], ['', periodEndOf(p, 'cy'), ...(hasPy ? [periodEndOf(p, 'py')] : [])]];
+  for (const l of lines) {
+    const label = l.kind === 'line' ? `   ${l.label}` : l.label;
+    if (l.kind === 'heading') aoa.push([label]);
+    else aoa.push([label, r2(l.value), ...(hasPy ? [r2(l.prior ?? 0)] : [])]);
+  }
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{ wch: 52 }, { wch: 18 }];
+  ws['!cols'] = [{ wch: 52 }, { wch: 18 }, { wch: 18 }];
   return ws;
 }
 
-export function exportConsolidation(p: Project, r: ConsolidationResult) {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, stmtSheet('Consolidated statement of financial position', p, balanceSheet(r)), 'Balance Sheet');
-  XLSX.utils.book_append_sheet(wb, stmtSheet('Consolidated income statement', p, incomeStatement(r)), 'Income Statement');
-
+function worksheetSheet(r: ConsolidationResult) {
   const ws = [['Code', 'Account', ...r.columns.map((c) => c.label)], ...r.rows.map((row) => [row.code, row.name, ...r.columns.map((c) => r2(row.values[c.key]))])];
   ws.push(['', 'Check (should be 0)', ...r.columns.map((c) => r2(r.rows.reduce((s, row) => s + row.values[c.key], 0)))]);
-  const wsSheet = XLSX.utils.aoa_to_sheet(ws);
-  wsSheet['!cols'] = [{ wch: 8 }, { wch: 40 }, ...r.columns.map(() => ({ wch: 16 }))];
-  XLSX.utils.book_append_sheet(wb, wsSheet, 'Worksheet (Dr+ Cr-)');
+  const sheet = XLSX.utils.aoa_to_sheet(ws);
+  sheet['!cols'] = [{ wch: 8 }, { wch: 40 }, ...r.columns.map(() => ({ wch: 16 }))];
+  return sheet;
+}
+
+export function exportConsolidation(p: Project, r: ConsolidationResult, prior?: ConsolidationResult | null) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, stmtSheet('Consolidated statement of financial position', p, balanceSheet(r, prior)), 'Balance Sheet');
+  XLSX.utils.book_append_sheet(wb, stmtSheet('Consolidated income statement', p, incomeStatement(r, prior)), 'Income Statement');
+  XLSX.utils.book_append_sheet(wb, worksheetSheet(r), 'Worksheet (Dr+ Cr-)');
+  if (prior) XLSX.utils.book_append_sheet(wb, worksheetSheet(prior), 'Worksheet prior period');
 
   const accName = new Map(r.accounts.map((a) => [a.code, a.name]));
   const jr: unknown[][] = [['Journal', 'Column', 'Account', 'Account name', 'Debit', 'Credit']];
@@ -46,6 +56,7 @@ export function exportConsolidation(p: Project, r: ConsolidationResult) {
   for (const h of p.holdings) st.push([n(h.holderId), n(h.investeeId), h.pct, h.cost, h.acqEquity ?? '(opening equity)', h.acqDate]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(st), 'Group Structure');
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Level', 'Message'], ...r.checks.map((c) => [c.level, c.message])]), 'Checks');
+  const checks = [...r.checks.map((c) => ['Current', c.level, c.message]), ...(prior?.checks ?? []).map((c) => ['Prior', c.level, c.message])];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Period', 'Level', 'Message'], ...checks]), 'Checks');
   XLSX.writeFile(wb, `${p.name.replace(/[^\w\- ]/g, '')} consolidation ${p.periodEnd}.xlsx`);
 }
