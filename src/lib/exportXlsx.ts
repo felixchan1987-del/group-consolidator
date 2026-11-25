@@ -48,6 +48,10 @@ export function exportConsolidation(p: Project, r: ConsolidationResult, prior?: 
   for (const a of r.associates) for (const k of a.pickups) sub.push([a.name, k.holderName, r2(k.pct * 100), r2(k.cost), r2(k.acqEquity), r2(k.reserves), r2(k.profit)]);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sub), 'Goodwill & NCI');
 
+  const ic: unknown[][] = [['Type', 'Company (receivable / expense)', 'Amount', 'Counterparty (payable / revenue)', 'Amount', 'Eliminated', 'Difference']];
+  for (const x of r.icRecon) ic.push([x.kind === 'balance' ? 'Balance' : 'P&L', x.debitName, r2(x.debitAmount), x.creditName, r2(x.creditAmount), r2(x.eliminated), r2(x.difference)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ic), 'IC reconciliation');
+
   const st: unknown[][] = [['Entity', 'Code', 'Currency', 'Method', 'Group votes %', 'Effective interest %']];
   for (const e of p.entities) st.push([e.name, e.code, e.currency, METHOD_SHORT[r.structure.method[e.id]], r2(r.structure.groupVotes[e.id] * 100), r2(r.structure.effective[e.id] * 100)]);
   st.push([]);

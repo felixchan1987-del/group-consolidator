@@ -5,11 +5,23 @@ import { exportConsolidation } from '../lib/exportXlsx';
 import { ADJ_LABELS } from '../lib/consolidate';
 import { fmt, pct } from '../lib/util';
 import { periodEndOf } from '../lib/periods';
+import DrillPanel from './DrillPanel';
+import { UNMAPPED } from '../lib/consolidate';
 import type { Period } from '../types';
 
-type Tab = 'bs' | 'is' | 'ws' | 'nci' | 'jr' | 'checks';
+type Tab = 'bs' | 'is' | 'ws' | 'nci' | 'ic' | 'jr' | 'checks';
 
-function Statement({ lines, title, sub, heads }: { lines: StmtLine[]; title: string; sub: string; heads: [string, string] }) {
+function Statement({ lines, title, sub, heads, onDrill }: { lines: StmtLine[]; title: string; sub: string; heads: [string, string]; onDrill: (code: string, period: Period) => void }) {
+  const cell = (l: StmtLine, period: Period) => {
+    const v = period === 'cy' ? l.value : l.prior ?? 0;
+    if (l.kind === 'heading') return '';
+    if (!l.code || Math.abs(v) < 0.005) return fmt(v);
+    return (
+      <button className="drill" onClick={() => onDrill(l.code!, period)} title="Show source lines and consolidation entries">
+        {fmt(v)}
+      </button>
+    );
+  };
   const hasPy = lines.some((l) => l.prior !== undefined);
   return (
     <div>
@@ -29,8 +41,8 @@ function Statement({ lines, title, sub, heads }: { lines: StmtLine[]; title: str
           {lines.map((l, i) => (
             <tr key={i} className={l.kind}>
               <td>{l.label}</td>
-              <td className="num">{l.kind === 'heading' ? '' : fmt(l.value)}</td>
-              {hasPy && <td className="num muted">{l.kind === 'heading' ? '' : fmt(l.prior ?? 0)}</td>}
+              <td className="num">{cell(l, 'cy')}</td>
+              {hasPy && <td className="num muted">{cell(l, 'py')}</td>}
             </tr>
           ))}
         </tbody>
@@ -44,6 +56,8 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
   const [per, setPer] = useState<Period>('cy');
   // detail tabs (worksheet, NCI, journals) show one period at a time
   const r = per === 'py' && prior ? prior : cyResult;
+  const [drillAt, setDrillAt] = useState<{ account: string; column: string; period: Period } | null>(null);
+  const openDrill = (account: string, column: string, period: Period) => setDrillAt({ account, column, period });
   const [showZero, setShowZero] = useState(false);
   const cur = project.presentationCurrency;
   const sub = `${project.name} · period ended ${project.periodEnd} · ${cur}`;
@@ -71,7 +85,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
         <div>
           <h2>Consolidated reports</h2>
           <p className="muted">
-            {cyResult.consolidatedIds.length} entities fully consolidated, {cyResult.associates.length} equity-accounted{prior ? ', with comparatives' : ''}. Everything recalculates live as you change data, structure or mappings.
+            {cyResult.consolidatedIds.length} entities fully consolidated, {cyResult.associates.length} equity-accounted{prior ? ', with comparatives' : ''}. Everything recalculates live as you change data, structure or mappings. Click any amount to drill down to the source lines.
           </p>
         </div>
         <button className="btn primary" onClick={() => exportConsolidation(project, cyResult, prior)}>
@@ -108,6 +122,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
             ['is', 'Income statement'],
             ['ws', 'Consolidation worksheet'],
             ['nci', 'Goodwill & NCI'],
+            ['ic', `Intercompany${cyResult.icRecon.some((x) => Math.abs(x.difference) > 0.5) || prior?.icRecon.some((x) => Math.abs(x.difference) > 0.5) ? ' ⚠' : ''}`],
             ['jr', `Elimination journals (${r.journals.length})`],
             ['checks', `Checks${errors.length ? ` (${errors.length} errors)` : warns.length ? ` (${warns.length} warnings)` : ''}`],
           ] as [Tab, string][]
@@ -118,7 +133,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
         ))}
       </div>
 
-      {prior && ['ws', 'nci', 'jr'].includes(tab) && (
+      {prior && ['ws', 'nci', 'ic', 'jr'].includes(tab) && (
         <div className="row">
           <span className="small muted">Period:</span>
           {(['cy', 'py'] as Period[]).map((x) => (
@@ -128,13 +143,13 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
           ))}
         </div>
       )}
-      {tab === 'bs' && <Statement lines={bs} heads={heads} title="Consolidated statement of financial position" sub={sub} />}
-      {tab === 'is' && <Statement lines={is} heads={heads} title="Consolidated statement of profit or loss" sub={sub} />}
+      {tab === 'bs' && <Statement lines={bs} heads={heads} onDrill={(c, p) => openDrill(c, 'total', p)} title="Consolidated statement of financial position" sub={sub} />}
+      {tab === 'is' && <Statement lines={is} heads={heads} onDrill={(c, p) => openDrill(c, 'total', p)} title="Consolidated statement of profit or loss" sub={sub} />}
 
       {tab === 'ws' && (
         <>
           <div className="row">
-            <span className="small muted">Debit positive, credit in brackets. Entity columns are translated to {cur} and mapped to group accounts.</span>
+            <span className="small muted">Debit positive, credit in brackets. Entity columns are translated to {cur} and mapped to group accounts. Click any amount to see where it comes from.</span>
             <div className="grow" />
             <label className="check small">
               <input type="checkbox" checked={showZero} onChange={(e) => setShowZero(e.target.checked)} /> Show zero rows
@@ -162,7 +177,13 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
                       </td>
                       {r.columns.map((c) => (
                         <td key={c.key} className={`num ${c.kind === 'total' ? 'col-total' : c.kind === 'adj' ? 'col-adj' : ''}`}>
-                          {fmt(row.values[c.key])}
+                          {Math.abs(row.values[c.key]) < 0.005 ? (
+                            fmt(row.values[c.key])
+                          ) : (
+                            <button className="drill" onClick={() => openDrill(row.code === '—' ? UNMAPPED : row.code, c.key, per)} title="Show source lines and consolidation entries">
+                              {fmt(row.values[c.key])}
+                            </button>
+                          )}
                         </td>
                       ))}
                     </tr>
@@ -222,6 +243,48 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
               </tbody>
             </table>
           </div>
+          {r.disposals.length > 0 && (
+            <div>
+              <h3 style={{ marginBottom: 8 }}>Subsidiaries disposed of in the period</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Subsidiary</th>
+                      <th>Date</th>
+                      <th className="num">Results included</th>
+                      <th className="num">Proceeds</th>
+                      <th className="num">Net assets at disposal</th>
+                      <th className="num">Less NCI</th>
+                      <th className="num">Goodwill</th>
+                      <th className="num">FCTR recycled</th>
+                      <th className="num">Group gain</th>
+                      <th className="num">Gain in holder's books</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.disposals.map((d) => (
+                      <tr key={d.entityId}>
+                        <td>{d.name}</td>
+                        <td>{d.date}</td>
+                        <td className="num">{pct(d.fraction)}</td>
+                        <td className="num">{fmt(d.proceeds)}</td>
+                        <td className="num">{fmt(d.netAssets)}</td>
+                        <td className="num">{fmt(-d.nciDerecognised)}</td>
+                        <td className="num">{fmt(d.goodwill)}</td>
+                        <td className="num">{fmt(d.fctrRecycled)}</td>
+                        <td className="num"><b>{fmt(d.groupGain)}</b></td>
+                        <td className="num muted">{fmt(d.entityGain)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="small muted" style={{ marginTop: 6 }}>
+                Group gain = proceeds − (net assets − NCI + goodwill) + group share of the translation reserve recycled to profit. The difference to the gain in the holder's own books is posted to the disposal gain account.
+              </p>
+            </div>
+          )}
           <div>
             <h3 style={{ marginBottom: 8 }}>Goodwill by holding</h3>
             <div className="table-wrap">
@@ -296,6 +359,69 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
         </div>
       )}
 
+      {tab === 'ic' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {!project.settings.autoEliminateIC && <div className="callout warn small">Automatic intercompany elimination is switched off (FX &amp; adjustments page).</div>}
+          {(
+            [
+              ['balance', 'Receivables / payables', 'Receivable shown by', 'Payable shown by'],
+              ['pl', 'Revenue / expenses', 'Expense shown by', 'Revenue shown by'],
+            ] as const
+          ).map(([kind, title, dl, cl]) => {
+            const rows = r.icRecon.filter((x) => x.kind === kind);
+            return (
+              <div key={kind}>
+                <h3 style={{ marginBottom: 8 }}>{title}</h3>
+                {rows.length === 0 ? (
+                  <div className="small muted">No intercompany {title.toLowerCase()} between consolidated companies.</div>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>{dl}</th>
+                          <th className="num">Amount</th>
+                          <th>{cl}</th>
+                          <th className="num">Amount</th>
+                          <th className="num">Eliminated</th>
+                          <th className="num">Difference</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((x, i) => (
+                          <tr key={i}>
+                            <td>{x.debitName}</td>
+                            <td className="num">{fmt(x.debitAmount)}</td>
+                            <td>{x.creditName}</td>
+                            <td className="num">{fmt(x.creditAmount)}</td>
+                            <td className="num">{fmt(x.eliminated)}</td>
+                            <td className="num">{fmt(x.difference)}</td>
+                            <td>
+                              {!x.debitId ? (
+                                <span className="badge warn">tag counterparties</span>
+                              ) : Math.abs(x.difference) <= 0.5 ? (
+                                <span className="badge ok">Agreed</span>
+                              ) : (
+                                <span className="badge err">Mismatch</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <p className="small muted">
+            Amounts in {project.presentationCurrency} after translation. Matched amounts are eliminated; differences stay in the consolidated accounts until the companies agree their balances (common causes: cut-off,
+            goods or cash in transit, different exchange rates, or a line mapped to the wrong account).
+          </p>
+        </div>
+      )}
+
       {tab === 'jr' && (
         <div>
           {r.journals.length === 0 && <div className="empty">No consolidation entries.</div>}
@@ -341,6 +467,16 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
             </li>
           ))}
         </ul>
+      )}
+      {drillAt && (
+        <DrillPanel
+          project={project}
+          result={drillAt.period === 'py' && prior ? prior : cyResult}
+          account={drillAt.account}
+          column={drillAt.column}
+          periodLabel={`period ended ${periodEndOf(project, drillAt.period)}`}
+          onClose={() => setDrillAt(null)}
+        />
       )}
     </section>
   );

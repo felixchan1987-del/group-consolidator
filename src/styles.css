@@ -134,6 +134,7 @@ th.sticky-col { z-index: 3; background: var(--panel-2); }
 .badge.m-parent { background: var(--accent-soft); color: var(--parent); }
 .badge.m-full { background: var(--ok-soft); color: var(--sub); }
 .badge.m-equity { background: var(--warn-soft); color: var(--assoc); }
+.badge.m-disposed { background: var(--err-soft); color: var(--err); }
 .badge.m-investment, .badge.m-none { background: var(--panel-2); color: var(--inv); border: 1px solid var(--border); }
 
 .callout { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); }
@@ -177,6 +178,7 @@ th.sticky-col { z-index: 3; background: var(--panel-2); }
 .org-node.m-parent { border-top-color: var(--parent); }
 .org-node.m-full { border-top-color: var(--sub); }
 .org-node.m-equity { border-top-color: var(--assoc); }
+.org-node.m-disposed { border-top-color: var(--err); opacity: .8; }
 .org-node .nm { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .org-node .meta { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; margin-top: 4px; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
@@ -205,3 +207,8 @@ th.sticky-col { z-index: 3; background: var(--panel-2); }
   .page { padding: 16px; }
   .project-meta { margin-left: 0; }
 }
+
+/* Drill-down links on amounts */
+button.drill { all: unset; cursor: pointer; border-bottom: 1px dotted var(--muted); font-variant-numeric: tabular-nums; }
+button.drill:hover { color: var(--accent); border-bottom-color: var(--accent); }
+button.drill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }

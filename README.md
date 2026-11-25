@@ -49,17 +49,27 @@ The engine consolidates each period on its own, with that period's rates and jou
 | NCI | (1 − effective interest) × subsidiary's equity − indirect NCI share of the intermediate holder's investment cost; plus NCI share of profit. |
 | Equity method | Holder's share of the associate's post-acquisition reserves goes to retained earnings, and its share of profit to "Share of profit of associates", both posted at holder level so the holder's NCI shares in them. |
 | FX translation | Assets/liabilities at the closing rate, income/expenses at the average rate, equity at the historical rate. The difference goes to the FCTR, and NCI takes its share. |
-| Intercompany | Balances mapped to IC receivable/payable and IC revenue/expense are eliminated up to the matched amount. Mismatches stay visible and are reported. |
+| Ownership over time | A holding counts from its acquisition date until its disposal date. Control is assessed at the start and the end of each period, so comparatives use the structure as it was then. |
+| Mid-year acquisition | Only post-acquisition results are consolidated, time-apportioned by days. The pre-acquisition part becomes part of the net assets acquired. Tick "TB covers only this part" if the uploaded TB already starts at acquisition. Associates bought mid-year pick up only post-acquisition profit. |
+| Loss of control | Results are consolidated up to the disposal date. Net assets, NCI and the whole FCTR are derecognised, and the group gain (proceeds − (net assets − NCI + goodwill) + recycled FCTR) replaces the gain in the holder's books on the "Gain on disposal of subsidiaries" account. |
+| Intercompany | Each line mapped to an IC account names its counterparty company. This is auto-suggested from the account name ("Due to Apex Holdings") and can be set on the mapping page. Balances are matched per company pair and direction (X's receivable from Y vs Y's payable to X; X's expense to Y vs Y's revenue from X), and matched amounts are eliminated. Differences stay visible and appear on the Intercompany reconciliation tab and Excel sheet. Lines without a counterparty are matched as one pool, with a warning. |
+| Intra-group dividends | Dividends declared by a subsidiary or associate × each group holder's % are removed from the holder's "Dividend income from group companies" (posted at holder level). The NCI's share of a subsidiary's dividend reduces NCI. A warning appears if the receiver's recorded income doesn't match. |
+| Unrealised profit (URP) | Per seller/buyer pair: closing inventory × margin (or mark-up / (1 + mark-up)) → Dr cost of sales, Cr inventories. Opening URP is released through opening retained earnings. Posted at the seller, so NCI bears its share of upstream sales. Roll forward carries closing inventory into next period's opening. |
 | Manual journals | Free-form balanced journals with templates for dividends, unrealised profit and goodwill impairment. |
 
 Sign convention internally: debit positive, credit negative.
 
+### Drill-down
+
+Click any amount in the balance sheet, income statement (either year) or consolidation worksheet. A panel lists the trial balance lines behind it: company, source file, local account, local amount, exchange rate used and translated amount. It also shows the calculated translation difference and every consolidation entry posted to that account. The panel can be downloaded to Excel. A test checks that every worksheet cell equals the sum of its drill-down.
+
 ### Simplifications to be aware of
 
 - One historical rate per entity for all equity lines (opening retained earnings are usually built up year by year).
-- Acquisitions are treated as happening before the current period (no mid-year acquisition or disposal, no step acquisitions).
+- Periods are 12 months. Time apportionment is by days.
+- Not automated, but flagged with a warning: step acquisitions (remeasuring a previously held interest), partial disposals without loss of control (NCI equity transactions), remeasuring an interest retained after losing control, and disposals of associates.
 - Manual journals that affect profit are attributed entirely to owners of the parent.
-- Intercompany dividends and unrealised profit need manual journals.
+- URP on fixed-asset transfers and URP with associates need manual journals.
 
 ## Project structure
 

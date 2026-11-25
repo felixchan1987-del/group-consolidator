@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import type { Entity, GroupAccount, Project } from '../types';
 import { suggestMapping } from './automap';
+import { autoTagCounterparties } from './counterparty';
 import { emptyProject, lineKey, newEntity, uid } from './util';
 
 type Row = [code: string, name: string, debitPositive: number];
@@ -35,7 +36,7 @@ export const SAMPLE: SampleEntity[] = [
       ['3000', 'Share Capital', -1000000],
       ['3200', 'Retained Earnings', -600000],
       ['4000', 'Sales', -1200000],
-      ['4050', 'Intercompany management fee income', -60000],
+      ['4050', 'Intercompany management fee income - Beacon', -60000],
       ['5000', 'Cost of Goods Sold', 700000],
       ['5100', 'Wages and Salaries', 180000],
       ['5300', 'Rent', 40000],
@@ -141,6 +142,7 @@ export function buildSampleProject(): Project {
     return e;
   });
   p.entities = ents;
+  autoTagCounterparties(p);
   const [apex, beacon, cobalt, delta] = ents;
   p.parentId = apex.id;
   p.holdings = [

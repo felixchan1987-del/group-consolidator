@@ -3,7 +3,7 @@ import type { Project } from './types';
 import { consolidate, type ConsolidationResult } from './lib/consolidate';
 import { downloadJson, useProject } from './lib/store';
 import { buildSampleProject } from './lib/sample';
-import { CURRENCIES, emptyProject } from './lib/util';
+import { CURRENCIES, emptyProject, migrateProject } from './lib/util';
 import { hasPrior, projectForPeriod } from './lib/periods';
 import UploadPage from './components/UploadPage';
 import StructurePage from './components/StructurePage';
@@ -61,7 +61,7 @@ export default function App() {
     try {
       const p = JSON.parse(await f.text()) as Project;
       if (p.version !== 1 || !Array.isArray(p.entities)) throw new Error('Not a consolidation project file');
-      setProject({ ...emptyProject(), ...p });
+      setProject(migrateProject(p));
     } catch (e) {
       alert(`Could not open project: ${(e as Error).message}`);
     }

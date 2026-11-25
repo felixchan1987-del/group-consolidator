@@ -4,7 +4,8 @@ import { analyseStructure } from './structure';
 import { incomeStatement, balanceSheet } from './statements';
 import { detectColumns, detectHeaderRow, extractLines, readWorkbook } from './importer';
 import { sampleWorkbook, SAMPLE } from './sample';
-import { parseAmount } from './util';
+import { lineKey, parseAmount } from './util';
+import { suggestMapping } from './automap';
 import { projectForPeriod, rollForward, shiftYears, hasPrior } from './periods';
 import * as XLSX from 'xlsx';
 
@@ -161,5 +162,295 @@ describe('comparative periods', () => {
   it('shifts dates by whole years', () => {
     expect(shiftYears('2024-02-29', 1)).toBe('2025-02-28');
     expect(shiftYears('2026-12-31', -1)).toBe('2025-12-31');
+  });
+});
+
+describe('acquisitions and disposals during the period', () => {
+  const sumAll = (b: Record<string, number>) => Object.values(b).reduce((a, x) => a + x, 0);
+
+  it('time-apportions the results of a subsidiary acquired mid-year', () => {
+    const p = buildSampleProject();
+    const h = p.holdings.find((x) => x.investeeId === p.entities[2].id)!; // Beacon -> Cobalt
+    h.acqDate = '2026-07-01';
+    h.acqEquity = null; // net assets at acquisition = equity incl. pre-acquisition profit
+    const r = consolidate(projectForPeriod(p, 'cy'));
+    const f = 184 / 365; // 1 Jul - 31 Dec inclusive
+    close(r.structure.fraction[p.entities[2].id], f);
+    const cobalt = r.subsidiaries.find((s) => s.name === 'Cobalt GmbH')!;
+    close(cobalt.profit, 54000 * f);
+    close(cobalt.postAcqToGroup, 0);
+    close(cobalt.goodwill, 0.8 * (600000 - 0.6 * (577500 + 54000 * (1 - f))));
+    close(r.profit.total, 414000 - 54000 * (1 - f));
+    close(sumAll(r.consolidated), 0);
+    expect(r.checks.filter((c) => c.level === 'error')).toEqual([]);
+    // not yet owned in the comparative period
+    const py = consolidate(projectForPeriod(p, 'py'));
+    expect(py.structure.method[p.entities[2].id]).toBe('none');
+  });
+
+  it('derecognises a subsidiary sold mid-year and books the group gain', () => {
+    const p = buildSampleProject();
+    const h = p.holdings.find((x) => x.investeeId === p.entities[2].id)!;
+    h.disposalDate = '2026-06-30';
+    h.proceeds = 700000;
+    const r = consolidate(projectForPeriod(p, 'cy'));
+    const id = p.entities[2].id;
+    expect(r.structure.method[id]).toBe('disposed');
+    const f = 181 / 365; // 1 Jan - 30 Jun
+    const d = r.disposals[0];
+    close(d.fraction, f);
+    const pIn = 54000 * f;
+    // Group gain per IFRS 10: proceeds - (net assets - NCI + goodwill) + group share of FCTR recycled
+    const g = 0.48;
+    const na = 577500 + 28500 + pIn;
+    const nci = (1 - g) * na - 0.2 * 600000;
+    const gw = 0.8 * (600000 - 0.6 * 525000);
+    close(d.netAssets, na);
+    close(d.nciDerecognised, nci);
+    close(d.goodwill, gw);
+    close(d.groupGain, 700000 - (na - nci + gw) + g * 28500);
+    // nothing of Cobalt's balance sheet or reserves remains; its results to disposal are included
+    close(r.consolidated['3300'] ?? 0, 0);
+    close(r.consolidated['1200'], 150000); // inventories: Beacon only
+    close(r.profit.nci, 20000 + (1 - g) * pIn);
+    close(r.nciTotal, 186000 + 20000); // Beacon's NCI only
+    close(sumAll(r.consolidated), 0);
+    expect(r.checks.filter((c) => c.level === 'error')).toEqual([]);
+    // still a subsidiary in the comparative period
+    expect(consolidate(projectForPeriod(p, 'py')).structure.method[id]).toBe('full');
+  });
+
+  it('picks up only post-acquisition profit of an associate bought mid-year', () => {
+    const p = buildSampleProject();
+    const h = p.holdings.find((x) => x.investeeId === p.entities[3].id)!;
+    h.acqDate = '2026-10-01';
+    h.acqEquity = 850000 + 100000 * (1 - 92 / 365); // net assets at acquisition incl. profit to date
+    const r = consolidate(projectForPeriod(p, 'cy'));
+    const k = r.associates[0].pickups[0];
+    close(k.profit, 0.3 * 100000 * (92 / 365));
+    close(k.reserves, 0);
+  });
+});
+
+describe('project migration', () => {
+  it('adds system accounts introduced in later versions', async () => {
+    const { migrateProject } = await import('./util');
+    const p = buildSampleProject();
+    p.accounts = p.accounts.filter((a) => a.role !== 'disposal_gain');
+    expect(migrateProject(p).accounts.some((a) => a.role === 'disposal_gain')).toBe(true);
+  });
+});
+
+describe('intra-group dividends and unrealised profit', () => {
+  const addLines = (p: ReturnType<typeof buildSampleProject>, idx: number, rows: [string, string, number][]) => {
+    const e = p.entities[idx];
+    for (const [code, name, amount] of rows) {
+      const l = { id: `t${code}${amount}`, code, name, amount, sign: 'dr' as const, sourceId: 's' };
+      e.lines.push(l);
+      e.mapping[lineKey(l)] = suggestMapping(code, name, p.accounts)!.code;
+    }
+  };
+  const run = (p: ReturnType<typeof buildSampleProject>) => consolidate(projectForPeriod(p, 'cy'));
+  const owners = (r: ReturnType<typeof consolidate>) => balanceSheet(r).find((l) => l.label === 'Equity attributable to owners of the parent')!.value;
+
+  it('maps dividend accounts automatically', () => {
+    const accts = buildSampleProject().accounts;
+    expect(suggestMapping('3500', 'Dividends paid', accts)?.code).toBe('3250');
+    expect(suggestMapping('4800', 'Dividend received from subsidiary', accts)?.code).toBe('4060');
+    expect(suggestMapping('4810', 'Intercompany dividend income', accts)?.code).toBe('4060');
+  });
+
+  it('eliminates a dividend from an 80% subsidiary: profit and owners unchanged, NCI receives its share', () => {
+    const base = run(buildSampleProject());
+    const p = buildSampleProject();
+    addLines(p, 1, [['3250', 'Dividends paid', 50000], ['1010', 'Checking', -50000]]); // Beacon pays 50k
+    addLines(p, 0, [['4060', 'Dividend received from subsidiary Beacon', -40000], ['1000', 'Business Bank Account', 40000]]); // Apex gets 80%
+    const r = run(p);
+    expect(r.dividends).toHaveLength(1);
+    close(r.dividends[0].amount, 40000);
+    close(r.profit.total, base.profit.total);
+    close(r.nciTotal, base.nciTotal - 10000);
+    close(owners(r), owners(base));
+    close(r.consolidated['4060'] ?? 0, 0);
+    expect(r.checks.filter((c) => c.level !== 'ok')).toEqual([]);
+  });
+
+  it('handles a dividend from an indirect subsidiary (held 60% by an 80% subsidiary)', () => {
+    const usd = () => {
+      const p = buildSampleProject();
+      p.entities[2].currency = 'USD';
+      return p;
+    };
+    const base = run(usd());
+    const p = usd();
+    addLines(p, 2, [['3250', 'Dividends paid', 100000], ['113100', 'Bank Deutsche Bank', -100000]]); // Cobalt pays 100k
+    addLines(p, 1, [['4060', 'Dividend from group company Cobalt', -60000], ['1010', 'Checking', 60000]]); // Beacon gets 60%
+    const r = run(p);
+    close(r.profit.total, base.profit.total);
+    close(owners(r), owners(base));
+    close(r.nciTotal, base.nciTotal - 40000); // only the 40% outside shareholders of Cobalt received cash
+    expect(r.checks.filter((c) => c.level === 'error' || c.level === 'warn')).toEqual([]);
+  });
+
+  it('warns when the receiver did not record the dividend as group dividend income', () => {
+    const p = buildSampleProject();
+    addLines(p, 1, [['3250', 'Dividends paid', 50000], ['1010', 'Checking', -50000]]);
+    addLines(p, 0, [['4100', 'Other income', -40000], ['1000', 'Business Bank Account', 40000]]);
+    expect(run(p).checks.some((c) => c.level === 'warn' && c.message.includes('intra-group dividend income'))).toBe(true);
+  });
+
+  it('removes unrealised profit on upstream sales and charges NCI its share', () => {
+    const base = run(buildSampleProject());
+    const p = buildSampleProject();
+    const [apex, beacon] = p.entities;
+    p.urp = [{ id: 'u1', sellerId: beacon.id, buyerId: apex.id, description: 'Goods', closingInventory: 100000, openingInventory: 40000, rate: 25, basis: 'margin' }];
+    const r = run(p);
+    close(r.urp[0].closingUrp, 25000);
+    close(r.urp[0].openingUrp, 10000);
+    close(r.profit.total, base.profit.total - 15000);
+    close(r.profit.nci, base.profit.nci - 3000); // 20% NCI in the seller
+    close(r.consolidated['1200'], base.consolidated['1200'] - 25000);
+    close(r.nciTotal, base.nciTotal - 5000); // 20% x closing URP (opening part via reserves + profit)
+    close(Object.values(r.consolidated).reduce((a, b) => a + b, 0), 0);
+  });
+
+  it('downstream URP (parent sells) is borne fully by the owners; mark-up basis', () => {
+    const base = run(buildSampleProject());
+    const p = buildSampleProject();
+    const [apex, beacon] = p.entities;
+    p.urp = [{ id: 'u2', sellerId: apex.id, buyerId: beacon.id, description: '', closingInventory: 100000, openingInventory: 0, rate: 25, basis: 'markup' }];
+    const r = run(p);
+    close(r.urp[0].closingUrp, 20000); // 25% mark-up on cost = 20% of selling price
+    close(r.profit.nci, base.profit.nci);
+    close(r.profit.owners, base.profit.owners - 20000);
+  });
+
+  it('rolls URP forward: closing inventory becomes next period opening', () => {
+    const p = buildSampleProject();
+    p.urp = [{ id: 'u1', sellerId: p.entities[1].id, buyerId: p.entities[0].id, description: '', closingInventory: 100000, openingInventory: 0, rate: 25, basis: 'margin' }];
+    const next = rollForward(p);
+    const cy = projectForPeriod(next, 'cy').urp!;
+    expect(cy).toHaveLength(1);
+    expect(cy[0].openingInventory).toBe(100000);
+    expect(cy[0].closingInventory).toBe(0);
+    expect(projectForPeriod(next, 'py').urp![0].closingInventory).toBe(100000);
+  });
+});
+
+describe('intercompany matching by counterparty', () => {
+  const run = (p: ReturnType<typeof buildSampleProject>) => consolidate(projectForPeriod(p, 'cy'));
+
+  it('suggests counterparties from account names', async () => {
+    const { suggestCounterparty } = await import('./counterparty');
+    const p = buildSampleProject();
+    const [apex, beacon, cobalt] = p.entities;
+    expect(suggestCounterparty('Due to Apex Holdings', p.entities, beacon.id)).toBe(apex.id);
+    expect(suggestCounterparty('Loan from Cobalt', p.entities, apex.id)).toBe(cobalt.id);
+    expect(suggestCounterparty('Intercompany receivable', p.entities, apex.id)).toBeNull();
+    // the sample is tagged when built
+    const tags = Object.values(apex.counterparty ?? {});
+    expect(tags).toEqual([beacon.id, beacon.id]);
+  });
+
+  it('eliminates and reconciles each company pair and direction', () => {
+    const r = run(buildSampleProject());
+    const bal = r.icRecon.filter((x) => x.kind === 'balance');
+    expect(bal).toHaveLength(1);
+    expect(bal[0].debitName).toBe('Apex Holdings Inc'); // receivable from Beacon
+    expect(bal[0].creditName).toBe('Beacon Trading LLC'); // payable to Apex
+    close(bal[0].eliminated, 50000);
+    const pl = r.icRecon.filter((x) => x.kind === 'pl');
+    expect(pl[0].debitName).toBe('Beacon Trading LLC'); // management fee expense
+    close(pl[0].difference, 0);
+    close(r.consolidated['1150'] ?? 0, 0);
+    close(r.consolidated['4050'] ?? 0, 0);
+    expect(r.checks.filter((c) => c.level === 'warn')).toEqual([]);
+  });
+
+  it('reports a mismatch for the pair and leaves the difference visible', () => {
+    const p = buildSampleProject();
+    const beacon = p.entities[1];
+    const l = beacon.lines.find((x) => x.name === 'Due to Apex Holdings' && !x.period)!;
+    l.amount = -45000;
+    beacon.lines.find((x) => x.name === 'Checking' && !x.period)!.amount -= 5000; // keep the TB balanced
+    const r = run(p);
+    const row = r.icRecon.find((x) => x.kind === 'balance')!;
+    close(row.difference, 5000);
+    close(row.eliminated, 45000);
+    close(r.consolidated['1150'], 5000);
+    expect(r.checks.some((c) => c.message.startsWith('Intercompany mismatch: Apex Holdings Inc receivable from Beacon Trading LLC 50000 vs Beacon Trading LLC payable to Apex Holdings Inc 45000'))).toBe(true);
+  });
+
+  it('does not net mismatches between different pairs', () => {
+    // Apex says Cobalt owes it 30k; Beacon says it owes Apex 50k (and Apex says Beacon owes 50k): only the agreeing pair is eliminated
+    const p = buildSampleProject();
+    const [apex, , cobalt] = p.entities;
+    const add = (e: typeof apex, code: string, name: string, amount: number, map: string, cp?: string) => {
+      const ln = { id: `x${code}`, code, name, amount, sign: 'dr' as const, sourceId: 's' };
+      e.lines.push(ln);
+      e.mapping[lineKey(ln)] = map;
+      if (cp) e.counterparty![lineKey(ln)] = cp;
+    };
+    add(apex, '1151', 'Loan to Cobalt', 30000, '1150', cobalt.id);
+    add(apex, '1001', 'Bank', -30000, '1000');
+    const r = run(p);
+    const row = r.icRecon.find((x) => x.debitId === apex.id && x.creditId === cobalt.id)!;
+    close(row.eliminated, 0);
+    close(row.difference, 30000);
+    close(r.consolidated['1150'], 30000);
+  });
+
+  it('falls back to pooled matching for lines without a counterparty', () => {
+    const p = buildSampleProject();
+    for (const e of p.entities) e.counterparty = {};
+    const r = run(p);
+    close(r.consolidated['1150'] ?? 0, 0);
+    close(r.consolidated['2050'] ?? 0, 0);
+    expect(r.checks.some((c) => c.message.includes('have no counterparty'))).toBe(true);
+  });
+});
+
+describe('drill-down', () => {
+  const scenarios = () => {
+    const plain = buildSampleProject();
+    const busy = buildSampleProject();
+    const [apex, beacon, cobalt] = busy.entities;
+    busy.holdings.find((h) => h.investeeId === cobalt.id)!.disposalDate = '2026-06-30';
+    busy.holdings.find((h) => h.investeeId === cobalt.id)!.proceeds = 700000;
+    busy.urp = [{ id: 'u', sellerId: beacon.id, buyerId: apex.id, description: '', closingInventory: 80000, openingInventory: 20000, rate: 30, basis: 'margin' }];
+    busy.journals = [{ id: 'j', description: 'Impairment', lines: [{ account: '5300', debit: 10000, credit: 0 }, { account: '1650', debit: 0, credit: 10000 }] }];
+    return { plain, busy };
+  };
+
+  for (const [label, p] of Object.entries(scenarios()))
+    for (const period of ['cy', 'py'] as const)
+      it(`ties every worksheet cell to its source lines and journals (${label}, ${period})`, async () => {
+        const { drill } = await import('./drilldown');
+        const { UNMAPPED } = await import('./consolidate');
+        const r = consolidate(projectForPeriod(p, period));
+        let cells = 0;
+        for (const row of r.rows)
+          for (const c of r.columns) {
+            const d = drill(r, row.code === '—' ? UNMAPPED : row.code, c.key);
+            close(d.total, row.values[c.key]);
+            cells++;
+          }
+        expect(cells).toBeGreaterThan(100);
+      });
+
+  it('lists the source lines with their translation', async () => {
+    const { drill } = await import('./drilldown');
+    const r = consolidate(projectForPeriod(buildSampleProject(), 'cy'));
+    const d = drill(r, '1000');
+    const cobalt = d.entities.find((e) => e.lines.some((l) => l.name === 'Bank Deutsche Bank'))!;
+    const l = cobalt.lines[0];
+    close(l.local, 150000);
+    close(l.rate, 1.1);
+    expect(l.rateType).toBe('closing');
+    expect(l.sourceFile).toBe('COB_trial_balance.xlsx');
+    close(d.total, r.consolidated['1000']);
+    // FCTR includes the calculated translation difference
+    const f = drill(r, '3300');
+    close(f.entities[0].cta, -28500);
   });
 });
