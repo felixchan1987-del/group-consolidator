@@ -64,6 +64,7 @@ export default function StructurePage({ project, update, result, go }: PageProps
           <span style={{ ['--c' as string]: 'var(--parent)' }}>Parent</span>
           <span style={{ ['--c' as string]: 'var(--sub)' }}>Subsidiary</span>
           <span style={{ ['--c' as string]: 'var(--assoc)' }}>Associate</span>
+          <span style={{ ['--c' as string]: 'var(--err)' }}>Disposed this period</span>
           <span style={{ ['--c' as string]: 'var(--inv)' }}>Investment / outside</span>
         </div>
       </div>
@@ -90,17 +91,19 @@ export default function StructurePage({ project, update, result, go }: PageProps
                 <th>Investee</th>
                 <th className="num">Holding %</th>
                 <th className="num" title="Cost of investment in presentation currency">Cost of investment ({project.presentationCurrency})</th>
-                <th className="num" title="Fair value of the investee's net assets at acquisition date. Leave blank to use its opening equity (i.e. acquired at the start of this period).">
+                <th className="num" title="Fair value of the investee's net assets at acquisition date (including its profit up to that date when bought mid-year). Leave blank to use its equity at the start of the period, or at the acquisition date for a mid-year acquisition.">
                   Net assets at acquisition
                 </th>
                 <th>Acquisition date</th>
+                <th title="Leave empty while the shares are still held">Disposal date</th>
+                <th className="num">Sale proceeds</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {holdings.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="muted small">
+                  <td colSpan={9} className="muted small">
                     No shareholdings yet.
                   </td>
                 </tr>
@@ -146,6 +149,18 @@ export default function StructurePage({ project, update, result, go }: PageProps
                       <input type="date" value={h.acqDate} onChange={(e) => set((x) => void (x.acqDate = e.target.value))} />
                     </td>
                     <td>
+                      <input type="date" value={h.disposalDate ?? ''} onChange={(e) => set((x) => void (x.disposalDate = e.target.value || undefined))} />
+                    </td>
+                    <td className="num">
+                      <input
+                        type="number"
+                        disabled={!h.disposalDate}
+                        value={h.proceeds ?? ''}
+                        onChange={(e) => set((x) => void (x.proceeds = e.target.value === '' ? undefined : Number(e.target.value)))}
+                        style={{ width: 120, textAlign: 'right' }}
+                      />
+                    </td>
+                    <td>
                       <button className="btn sm ghost danger" onClick={() => update((d) => void (d.holdings = d.holdings.filter((x) => x.id !== h.id)))} aria-label="Delete holding">
                         ✕
                       </button>
@@ -173,6 +188,7 @@ export default function StructurePage({ project, update, result, go }: PageProps
                 <th className="num">Effective interest</th>
                 <th className="num">NCI</th>
                 <th>Result</th>
+                <th title="Share of this period's results that belongs to the group">In group this period</th>
                 <th>Override</th>
               </tr>
             </thead>
@@ -186,12 +202,29 @@ export default function StructurePage({ project, update, result, go }: PageProps
                     </td>
                     <td>{e.currency}</td>
                     <td className="num">{m === 'parent' ? '—' : pct(s.groupVotes[e.id])}</td>
-                    <td className="num">{m === 'parent' || m === 'full' ? pct(s.effective[e.id]) : m === 'equity' ? pct(s.groupVotes[e.id]) : '—'}</td>
-                    <td className="num">{m === 'full' ? pct(1 - s.effective[e.id]) : '—'}</td>
+                    <td className="num">{m === 'parent' || m === 'full' || m === 'disposed' ? pct(s.effective[e.id]) : m === 'equity' ? pct(s.groupVotes[e.id]) : '—'}</td>
+                    <td className="num">{m === 'full' || m === 'disposed' ? pct(1 - s.effective[e.id]) : '—'}</td>
                     <td>
                       <span className={`badge m-${m}`} title={METHOD_LABELS[m]}>
                         {METHOD_SHORT[m]}
                       </span>
+                    </td>
+                    <td onClick={(ev) => ev.stopPropagation()} className="small">
+                      {s.changeDate[e.id] ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span>
+                            {m === 'disposed' ? 'Until' : 'From'} {s.changeDate[e.id]} · {pct(e.partialPeriodTB ? 1 : s.fraction[e.id])} of results
+                          </span>
+                          <label className="check" title="Tick if the uploaded trial balance only covers the time in the group (e.g. a TB at the disposal date). Otherwise results are time-apportioned by days.">
+                            <input type="checkbox" checked={!!e.partialPeriodTB} onChange={(ev) => update((d) => void (d.entities.find((x) => x.id === e.id)!.partialPeriodTB = ev.target.checked))} />
+                            TB covers only this part
+                          </label>
+                        </div>
+                      ) : m === 'full' || m === 'parent' ? (
+                        'Whole period'
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </td>
                     <td onClick={(ev) => ev.stopPropagation()}>
                       {m === 'parent' ? (

@@ -222,6 +222,48 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
               </tbody>
             </table>
           </div>
+          {r.disposals.length > 0 && (
+            <div>
+              <h3 style={{ marginBottom: 8 }}>Subsidiaries disposed of in the period</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Subsidiary</th>
+                      <th>Date</th>
+                      <th className="num">Results included</th>
+                      <th className="num">Proceeds</th>
+                      <th className="num">Net assets at disposal</th>
+                      <th className="num">Less NCI</th>
+                      <th className="num">Goodwill</th>
+                      <th className="num">FCTR recycled</th>
+                      <th className="num">Group gain</th>
+                      <th className="num">Gain in holder's books</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {r.disposals.map((d) => (
+                      <tr key={d.entityId}>
+                        <td>{d.name}</td>
+                        <td>{d.date}</td>
+                        <td className="num">{pct(d.fraction)}</td>
+                        <td className="num">{fmt(d.proceeds)}</td>
+                        <td className="num">{fmt(d.netAssets)}</td>
+                        <td className="num">{fmt(-d.nciDerecognised)}</td>
+                        <td className="num">{fmt(d.goodwill)}</td>
+                        <td className="num">{fmt(d.fctrRecycled)}</td>
+                        <td className="num"><b>{fmt(d.groupGain)}</b></td>
+                        <td className="num muted">{fmt(d.entityGain)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="small muted" style={{ marginTop: 6 }}>
+                Group gain = proceeds − (net assets − NCI + goodwill) + group share of the translation reserve recycled to profit. The difference to the gain in the holder's own books is posted to the disposal gain account.
+              </p>
+            </div>
+          )}
           <div>
             <h3 style={{ marginBottom: 8 }}>Goodwill by holding</h3>
             <div className="table-wrap">

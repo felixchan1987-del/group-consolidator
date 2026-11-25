@@ -1,6 +1,7 @@
 import type { Entity, GroupAccount, Project } from '../types';
 import { accountByRole, sortAccounts } from './coa';
-import { analyseStructure, type Method, type StructureInfo } from './structure';
+import { analyseStructure, heldOn, type Method, type StructureInfo } from './structure';
+import { fractionFrom, inPeriod, openingDate } from './periods';
 import { lineKey } from './util';
 
 /** Balances are always debit-positive internally. */
@@ -60,6 +61,26 @@ export interface SubSchedule {
   postAcqToGroup: number;
 }
 
+export interface DisposalSchedule {
+  entityId: string;
+  name: string;
+  date: string;
+  /** share of the period's results consolidated (to disposal date) */
+  fraction: number;
+  effective: number;
+  proceeds: number;
+  cost: number;
+  /** net assets at disposal = opening equity + FCTR + profit to disposal */
+  netAssets: number;
+  goodwill: number;
+  nciDerecognised: number;
+  fctrRecycled: number;
+  /** gain in the holders' own books (proceeds - cost) */
+  entityGain: number;
+  /** consolidated gain */
+  groupGain: number;
+}
+
 export interface AssocSchedule {
   entityId: string;
   name: string;
@@ -79,6 +100,7 @@ export interface ConsolidationResult {
   rows: { code: string; name: string; type: string; values: Record<string, number> }[];
   consolidated: Balances;
   subsidiaries: SubSchedule[];
+  disposals: DisposalSchedule[];
   associates: AssocSchedule[];
   profit: { total: number; nci: number; owners: number };
   nciTotal: number;
@@ -152,7 +174,7 @@ export function consolidate(p: Project): ConsolidationResult {
 
   const m = structure.method;
   const consolidatedIds = p.entities
-    .filter((e) => m[e.id] === 'parent' || m[e.id] === 'full')
+    .filter((e) => m[e.id] === 'parent' || m[e.id] === 'full' || m[e.id] === 'disposed')
     .sort((a, b) => (structure.level[a.id] ?? 99) - (structure.level[b.id] ?? 99))
     .map((e) => e.id);
   const isCons = (id: string) => consolidatedIds.includes(id);
@@ -176,17 +198,60 @@ export function consolidate(p: Project): ConsolidationResult {
   // Working balances per consolidated entity (translated + equity-accounting pickups) used for NCI calcs
   const working: Record<string, Balances> = {};
   for (const id of consolidatedIds) working[id] = { ...translation[id].translated };
+  const end = p.periodEnd;
+  const opening = openingDate(end);
+  const plAccounts = accounts.filter((a) => a.type === 'revenue' || a.type === 'expense');
+
+  // 1b. Entities that joined or left the group during the period: keep only the results for the time in the group.
+  //     The excluded part is moved into the entity's retained earnings (pre-acquisition reserves / derecognised on disposal).
+  for (const id of consolidatedIds) {
+    const f = structure.fraction[id] ?? 1;
+    const e = ent.get(id)!;
+    if (f >= 1 || !structure.changeDate[id]) continue;
+    const date = structure.changeDate[id];
+    const acquired = m[id] === 'full';
+    if (e.partialPeriodTB) {
+      checks.push({ level: 'ok', message: `${e.name}: ${acquired ? 'acquired' : 'disposed of'} on ${date}; its trial balance is marked as covering only the time in the group.` });
+      continue;
+    }
+    const b = working[id];
+    const postings: Posting[] = [];
+    let plSum = 0;
+    for (const a of plAccounts) {
+      const v = b[a.code] ?? 0;
+      if (!v) continue;
+      postings.push({ account: a.code, amount: -(1 - f) * v });
+      plSum += v;
+    }
+    if (role('retained') && plSum) postings.push({ account: role('retained')!, amount: (1 - f) * plSum });
+    if (!postings.length) continue;
+    journals.push({
+      id: `apportion_${id}`,
+      column: 'invest',
+      description: acquired
+        ? `Exclude pre-acquisition results of ${e.name} (acquired ${date}; ${(f * 100).toFixed(1)}% of the period consolidated)`
+        : `Exclude results of ${e.name} after disposal on ${date} (${(f * 100).toFixed(1)}% of the period consolidated)`,
+      postings,
+    });
+    for (const ps of postings) add(b, ps.account, ps.amount);
+    checks.push({ level: 'ok', message: `${e.name}: ${acquired ? 'acquired' : 'disposed of'} on ${date}; results time-apportioned (${(f * 100).toFixed(1)}% of the period).` });
+  }
 
   // 2. Equity accounting for associates (posted at holder level so the holder's NCI shares in it)
   const associates: AssocSchedule[] = [];
   for (const e of p.entities.filter((x) => m[x.id] === 'equity')) {
     const parts = equityParts(translation[e.id].translated, accounts);
     const sched: AssocSchedule = { entityId: e.id, name: e.name, groupVotes: structure.groupVotes[e.id], equity: parts.equityExFx + parts.fctr, profit: parts.profit, pickups: [] };
-    for (const h of p.holdings.filter((x) => x.investeeId === e.id && isCons(x.holderId))) {
+    for (const h of p.holdings.filter((x) => x.investeeId === e.id && isCons(x.holderId) && m[x.holderId] !== 'disposed')) {
+      if (inPeriod(h.disposalDate, end))
+        checks.push({ level: 'warn', message: `${name(h.holderId)} sold shares in associate ${e.name} during the period — record the disposal with a manual journal.` });
+      if (!heldOn(h, end)) continue;
       const f = h.pct / 100;
       const acq = h.acqEquity ?? sched.equity;
-      const reserves = f * (sched.equity - acq);
-      const profit = f * parts.profit;
+      // bought during the period: only the post-acquisition share of profit; the rest is in the acquired net assets
+      const post = inPeriod(h.acqDate, end) ? fractionFrom(h.acqDate, end) : 1;
+      const profit = f * parts.profit * post;
+      const reserves = f * (sched.equity + parts.profit - acq) - profit;
       sched.pickups.push({ holderId: h.holderId, holderName: name(h.holderId), pct: f, cost: h.cost, acqEquity: acq, reserves, profit });
       const postings: Posting[] = [
         { account: role('inv_assoc')!, amount: reserves + profit },
@@ -210,7 +275,9 @@ export function consolidate(p: Project): ConsolidationResult {
     const b = working[sid];
     const { equityExFx, fctr, profit } = equityParts(b, accounts);
     const g = structure.effective[sid];
-    const holds = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId));
+    const holds = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId) && m[h.holderId] !== 'disposed' && heldOn(h, end));
+    for (const h of p.holdings.filter((x) => x.investeeId === sid && inPeriod(x.disposalDate, end)))
+      checks.push({ level: 'warn', message: `${name(h.holderId)} sold part of ${s.name} without losing control — the change in NCI is an equity transaction; record it with a manual journal.` });
     const sched: SubSchedule = {
       entityId: sid,
       name: s.name,
@@ -265,9 +332,68 @@ export function consolidate(p: Project): ConsolidationResult {
     subsidiaries.push(sched);
   }
 
-  // 4. Intercompany eliminations (on aggregated consolidated entities)
+  // 3b. Subsidiaries disposed of during the period (loss of control)
+  const disposals: DisposalSchedule[] = [];
+  for (const sid of consolidatedIds) {
+    if (m[sid] !== 'disposed') continue;
+    const s = ent.get(sid)!;
+    const b = working[sid];
+    const g = structure.effective[sid];
+    const { equityExFx: e0, fctr: f0 } = equityParts(translation[sid].translated, accounts); // opening equity, FCTR
+    const pIn = equityParts(b, accounts).profit; // results up to disposal
+    const held = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId) && heldOn(h, opening));
+    const sold = held.filter((h) => inPeriod(h.disposalDate, end));
+    let r0 = 0,
+      goodwill = 0,
+      indirect = 0;
+    for (const h of held) {
+      const gh = structure.effective[h.holderId];
+      const acq = h.acqEquity ?? e0;
+      r0 += gh * (h.pct / 100) * (e0 - acq);
+      goodwill += gh * (h.cost - (h.pct / 100) * acq);
+      indirect += (1 - gh) * h.cost;
+    }
+    const proceeds = sold.reduce((t, h) => t + (h.proceeds ?? 0), 0);
+    const cost = sold.reduce((t, h) => t + h.cost, 0);
+    const entityGain = proceeds - cost;
+    const groupGain = entityGain - g * pIn - r0;
+    const netAssets = e0 + f0 + pIn;
+    const nciDerecognised = (1 - g) * netAssets - indirect;
+    const postings: Posting[] = [];
+    // derecognise all assets, liabilities and equity of the subsidiary (incl. its whole FCTR: group share recycled to profit)
+    for (const a of accounts) {
+      if (a.type === 'revenue' || a.type === 'expense' || a.role === 'nci') continue;
+      const v = b[a.code] ?? 0;
+      if (v) postings.push({ account: a.code, amount: -v });
+    }
+    if (b[UNMAPPED]) postings.push({ account: UNMAPPED, amount: -b[UNMAPPED] });
+    postings.push({ account: role('nci')!, amount: (1 - g) * pIn }); // NCI's share of profit to disposal leaves with the subsidiary
+    postings.push({ account: role('retained')!, amount: -r0 }); // group share of post-acquisition reserves at the start of the period
+    const gainAcc = role('disposal_gain');
+    if (!gainAcc) checks.push({ level: 'error', message: 'Group chart of accounts has no account with role "disposal_gain" (needed for disposals).' });
+    else postings.push({ account: gainAcc, amount: entityGain - groupGain }); // replace the holder's gain with the group gain
+    if (!sold.length) checks.push({ level: 'warn', message: `${s.name}: control lost on ${structure.changeDate[sid]} without a recorded sale — enter the disposal date and proceeds on the shareholding.` });
+    if (sold.some((h) => !h.proceeds)) checks.push({ level: 'warn', message: `${s.name}: disposal proceeds are 0 — enter the sale proceeds on the shareholding.` });
+    const balance = postings.reduce((x, y) => x + y.amount, 0);
+    if (Math.abs(balance) > 0.01) checks.push({ level: 'error', message: `${s.name}: disposal entry out of balance by ${balance.toFixed(2)}.` });
+    journals.push({
+      id: `disp_${sid}`,
+      column: 'invest',
+      description: `Disposal of ${s.name} on ${structure.changeDate[sid]}: derecognise net assets and NCI; group gain ${groupGain.toFixed(0)} replaces the holder's gain ${entityGain.toFixed(0)}`,
+      postings: mergePostings(postings),
+    });
+    nciProfitTotal += (1 - g) * pIn;
+    disposals.push({ entityId: sid, name: s.name, date: structure.changeDate[sid], fraction: structure.fraction[sid], effective: g, proceeds, cost, netAssets, goodwill, nciDerecognised, fctrRecycled: g * f0, entityGain, groupGain });
+  }
+
+  // 4. Intercompany eliminations (on aggregated consolidated entities; balances of disposed subsidiaries are no longer intra-group)
   const agg: Balances = {};
-  for (const id of consolidatedIds) for (const [k, v] of Object.entries(working[id])) add(agg, k, v);
+  for (const id of consolidatedIds)
+    for (const [k, v] of Object.entries(working[id])) {
+      const type = accounts.find((a) => a.code === k)?.type;
+      if (m[id] === 'disposed' && type !== 'revenue' && type !== 'expense') continue;
+      add(agg, k, v);
+    }
   if (p.settings.autoEliminateIC) {
     const sumRole = (r: string) => accounts.filter((a) => a.role === r).reduce((s, a) => s + (agg[a.code] ?? 0), 0);
     const pairs: [string, string, string][] = [
@@ -316,7 +442,7 @@ export function consolidate(p: Project): ConsolidationResult {
   colVals.total = consolidated;
 
   const columns: ConsolidationResult['columns'] = [
-    ...consolidatedIds.map((id) => ({ key: id, label: ent.get(id)!.code || ent.get(id)!.name, kind: 'entity' as const })),
+    ...consolidatedIds.map((id) => ({ key: id, label: (ent.get(id)!.code || ent.get(id)!.name) + (m[id] === 'disposed' ? ' (disposed)' : ''), kind: 'entity' as const })),
     ...(Object.keys(ADJ_LABELS) as AdjColumn[]).map((c) => ({ key: c, label: ADJ_LABELS[c], kind: 'adj' as const })),
     { key: 'total', label: 'Consolidated', kind: 'total' as const },
   ];
@@ -352,6 +478,7 @@ export function consolidate(p: Project): ConsolidationResult {
     rows,
     consolidated,
     subsidiaries,
+    disposals,
     associates,
     profit: { total: totalProfit, nci: nciProfitTotal, owners: totalProfit - nciProfitTotal },
     nciTotal,

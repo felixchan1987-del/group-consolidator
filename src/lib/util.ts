@@ -85,3 +85,13 @@ export function emptyProject(): Project {
 }
 
 export const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CNY', 'HKD', 'SGD', 'AUD', 'NZD', 'CAD', 'CHF', 'SEK', 'NOK', 'DKK', 'INR', 'MYR', 'THB', 'IDR', 'PHP', 'VND', 'KRW', 'TWD', 'AED', 'SAR', 'ZAR', 'BRL', 'MXN'];
+
+/** Brings projects saved by older versions up to date (e.g. adds system accounts introduced later). */
+export function migrateProject(p: Project): Project {
+  const base = emptyProject();
+  const out: Project = { ...base, ...p, settings: { ...base.settings, ...p.settings } };
+  const roles = new Set(out.accounts.map((a) => a.role).filter(Boolean));
+  const codes = new Set(out.accounts.map((a) => a.code));
+  for (const a of DEFAULT_ACCOUNTS) if (a.role && !roles.has(a.role) && !codes.has(a.code)) out.accounts = [...out.accounts, { ...a }];
+  return out;
+}

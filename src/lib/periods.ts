@@ -55,3 +55,35 @@ export function rollForward(p: Project): Project {
   next.journals = p.journals.filter(lineIn('cy')).map((j) => ({ ...j, period: 'py' as const }));
   return next;
 }
+
+const dayNum = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return Date.UTC(y, (m || 1) - 1, d || 1) / 86400000;
+};
+
+/** Whole days from a to b (b - a). */
+export function daysBetween(a: string, b: string): number {
+  return Math.round(dayNum(b) - dayNum(a));
+}
+
+/** The day before the period starts, i.e. the previous period end (periods are 12 months). */
+export function openingDate(periodEnd: string): string {
+  return shiftYears(periodEnd, -1);
+}
+
+/** Is the ISO date inside the period (after the opening date, up to and including the period end)? */
+export function inPeriod(date: string | undefined, periodEnd: string): boolean {
+  return !!date && date > openingDate(periodEnd) && date <= periodEnd;
+}
+
+/** Share of the period from `date` (inclusive) to the period end. */
+export function fractionFrom(date: string, periodEnd: string): number {
+  const total = daysBetween(openingDate(periodEnd), periodEnd);
+  return Math.min(1, Math.max(0, (daysBetween(date, periodEnd) + 1) / total));
+}
+
+/** Share of the period from the start up to and including `date`. */
+export function fractionTo(date: string, periodEnd: string): number {
+  const total = daysBetween(openingDate(periodEnd), periodEnd);
+  return Math.min(1, Math.max(0, daysBetween(openingDate(periodEnd), date) / total));
+}
