@@ -163,3 +163,79 @@ describe('comparative periods', () => {
     expect(shiftYears('2026-12-31', -1)).toBe('2025-12-31');
   });
 });
+
+describe('acquisitions and disposals during the period', () => {
+  const sumAll = (b: Record<string, number>) => Object.values(b).reduce((a, x) => a + x, 0);
+
+  it('time-apportions the results of a subsidiary acquired mid-year', () => {
+    const p = buildSampleProject();
+    const h = p.holdings.find((x) => x.investeeId === p.entities[2].id)!; // Beacon -> Cobalt
+    h.acqDate = '2026-07-01';
+    h.acqEquity = null; // net assets at acquisition = equity incl. pre-acquisition profit
+    const r = consolidate(projectForPeriod(p, 'cy'));
+    const f = 184 / 365; // 1 Jul - 31 Dec inclusive
+    close(r.structure.fraction[p.entities[2].id], f);
+    const cobalt = r.subsidiaries.find((s) => s.name === 'Cobalt GmbH')!;
+    close(cobalt.profit, 54000 * f);
+    close(cobalt.postAcqToGroup, 0);
+    close(cobalt.goodwill, 0.8 * (600000 - 0.6 * (577500 + 54000 * (1 - f))));
+    close(r.profit.total, 414000 - 54000 * (1 - f));
+    close(sumAll(r.consolidated), 0);
+    expect(r.checks.filter((c) => c.level === 'error')).toEqual([]);
+    // not yet owned in the comparative period
+    const py = consolidate(projectForPeriod(p, 'py'));
+    expect(py.structure.method[p.entities[2].id]).toBe('none');
+  });
+
+  it('derecognises a subsidiary sold mid-year and books the group gain', () => {
+    const p = buildSampleProject();
+    const h = p.holdings.find((x) => x.investeeId === p.entities[2].id)!;
+    h.disposalDate = '2026-06-30';
+    h.proceeds = 700000;
+    const r = consolidate(projectForPeriod(p, 'cy'));
+    const id = p.entities[2].id;
+    expect(r.structure.method[id]).toBe('disposed');
+    const f = 181 / 365; // 1 Jan - 30 Jun
+    const d = r.disposals[0];
+    close(d.fraction, f);
+    const pIn = 54000 * f;
+    // Group gain per IFRS 10: proceeds - (net assets - NCI + goodwill) + group share of FCTR recycled
+    const g = 0.48;
+    const na = 577500 + 28500 + pIn;
+    const nci = (1 - g) * na - 0.2 * 600000;
+    const gw = 0.8 * (600000 - 0.6 * 525000);
+    close(d.netAssets, na);
+    close(d.nciDerecognised, nci);
+    close(d.goodwill, gw);
+    close(d.groupGain, 700000 - (na - nci + gw) + g * 28500);
+    // nothing of Cobalt's balance sheet or reserves remains; its results to disposal are included
+    close(r.consolidated['3300'] ?? 0, 0);
+    close(r.consolidated['1200'], 150000); // inventories: Beacon only
+    close(r.profit.nci, 20000 + (1 - g) * pIn);
+    close(r.nciTotal, 186000 + 20000); // Beacon's NCI only
+    close(sumAll(r.consolidated), 0);
+    expect(r.checks.filter((c) => c.level === 'error')).toEqual([]);
+    // still a subsidiary in the comparative period
+    expect(consolidate(projectForPeriod(p, 'py')).structure.method[id]).toBe('full');
+  });
+
+  it('picks up only post-acquisition profit of an associate bought mid-year', () => {
+    const p = buildSampleProject();
+    const h = p.holdings.find((x) => x.investeeId === p.entities[3].id)!;
+    h.acqDate = '2026-10-01';
+    h.acqEquity = 850000 + 100000 * (1 - 92 / 365); // net assets at acquisition incl. profit to date
+    const r = consolidate(projectForPeriod(p, 'cy'));
+    const k = r.associates[0].pickups[0];
+    close(k.profit, 0.3 * 100000 * (92 / 365));
+    close(k.reserves, 0);
+  });
+});
+
+describe('project migration', () => {
+  it('adds system accounts introduced in later versions', async () => {
+    const { migrateProject } = await import('./util');
+    const p = buildSampleProject();
+    p.accounts = p.accounts.filter((a) => a.role !== 'disposal_gain');
+    expect(migrateProject(p).accounts.some((a) => a.role === 'disposal_gain')).toBe(true);
+  });
+});

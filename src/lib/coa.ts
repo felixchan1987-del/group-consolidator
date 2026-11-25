@@ -49,6 +49,7 @@ export const DEFAULT_ACCOUNTS: GroupAccount[] = [
   { code: '4000', name: 'Revenue', type: 'revenue', section: 'Revenue' },
   { code: '4050', name: 'Intercompany revenue', type: 'revenue', section: 'Revenue', role: 'ic_rev' },
   { code: '4100', name: 'Other income', type: 'revenue', section: 'Other income' },
+  { code: '4150', name: 'Gain / (loss) on disposal of subsidiaries', type: 'revenue', section: 'Other income', role: 'disposal_gain' },
   { code: '4200', name: 'Share of profit of associates', type: 'revenue', section: 'Share of associates', role: 'share_assoc' },
   { code: '4300', name: 'Finance income', type: 'revenue', section: 'Finance income' },
   { code: '5000', name: 'Cost of sales', type: 'expense', section: 'Cost of sales' },
@@ -72,6 +73,7 @@ export const ROLE_LABELS: Record<string, string> = {
   ic_pay: 'Intercompany payable',
   ic_rev: 'Intercompany revenue',
   ic_exp: 'Intercompany expense',
+  disposal_gain: 'Gain on disposal of subsidiaries',
 };
 
 export function accountByRole(accounts: GroupAccount[], role: string): GroupAccount | undefined {

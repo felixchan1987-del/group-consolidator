@@ -15,7 +15,8 @@ export type AccountRole =
   | 'ic_rec'
   | 'ic_pay'
   | 'ic_rev'
-  | 'ic_exp';
+  | 'ic_exp'
+  | 'disposal_gain';
 
 export interface GroupAccount {
   code: string;
@@ -78,6 +79,11 @@ export interface Entity {
   sources: SourceFile[];
   /** local account key -> group account code */
   mapping: Record<string, string>;
+  /**
+   * When an entity joins or leaves the group during the period: true if its trial balance already covers only the
+   * time it was in the group (e.g. a TB at the disposal date). false/undefined = full-period TB, results are time-apportioned.
+   */
+  partialPeriodTB?: boolean;
 }
 
 export interface Holding {
@@ -91,6 +97,10 @@ export interface Holding {
   /** investee net assets (fair value) at acquisition, presentation currency. null = same as opening equity this period */
   acqEquity: number | null;
   acqDate: string;
+  /** date the holding was sold; empty = still held */
+  disposalDate?: string;
+  /** sale proceeds in presentation currency */
+  proceeds?: number;
 }
 
 export interface JournalLine {

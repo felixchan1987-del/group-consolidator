@@ -61,12 +61,15 @@ export default function OrgChart({ project, structure, selected, onSelect }: { p
             const mx = down ? (x1 + x2) / 2 : Math.max(a.x, b.x) + W + 30,
               my = down ? (y1 + y2) / 2 : (a.y + b.y) / 2 + H / 2;
             const m = structure.method[h.investeeId];
+            const sold = !!h.disposalDate && h.disposalDate <= project.periodEnd;
+            const future = !!h.acqDate && h.acqDate > project.periodEnd;
+            if (future) return null;
             return (
               <g key={h.id}>
-                <path d={d} fill="none" stroke="var(--muted)" strokeWidth={1.5} strokeDasharray={m === 'equity' || m === 'investment' ? '5 4' : undefined} markerEnd="url(#arrow)" />
-                <rect x={mx - 24} y={my - 10} width={48} height={20} rx={10} fill="var(--panel)" stroke="var(--border)" />
-                <text x={mx} y={my + 4} textAnchor="middle" fontSize="11" fontWeight={600} fill="var(--text)">
-                  {+h.pct.toFixed(2)}%
+                <path d={d} fill="none" stroke="var(--muted)" strokeWidth={1.5} strokeDasharray={sold ? '2 4' : m === 'equity' || m === 'investment' ? '5 4' : undefined} opacity={sold ? 0.5 : 1} markerEnd="url(#arrow)" />
+                <rect x={mx - (sold ? 36 : 24)} y={my - 10} width={sold ? 72 : 48} height={20} rx={10} fill="var(--panel)" stroke="var(--border)" />
+                <text x={mx} y={my + 4} textAnchor="middle" fontSize="11" fontWeight={600} fill={sold ? 'var(--muted)' : 'var(--text)'}>
+                  {+h.pct.toFixed(2)}%{sold ? ' sold' : ''}
                 </text>
               </g>
             );
@@ -88,7 +91,7 @@ export default function OrgChart({ project, structure, selected, onSelect }: { p
                 <span>
                   {e.code} · {e.currency}
                 </span>
-                <span>{m === 'parent' ? '100%' : m === 'none' ? '—' : pct(m === 'full' ? structure.effective[e.id] : structure.groupVotes[e.id])}</span>
+                <span>{m === 'parent' ? '100%' : m === 'none' ? '—' : pct(m === 'full' || m === 'disposed' ? structure.effective[e.id] : structure.groupVotes[e.id])}</span>
               </div>
               <div className="meta">
                 <span className={`badge m-${m}`}>{METHOD_SHORT[m]}</span>

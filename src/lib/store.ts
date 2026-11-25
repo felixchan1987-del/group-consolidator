@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Project } from '../types';
-import { emptyProject } from './util';
+import { emptyProject, migrateProject } from './util';
 
 const KEY = 'group-consolidator:project:v1';
 
@@ -9,7 +9,7 @@ function load(): Project {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const p = JSON.parse(raw) as Project;
-      if (p && p.version === 1) return { ...emptyProject(), ...p, settings: { ...emptyProject().settings, ...p.settings } };
+      if (p && p.version === 1) return migrateProject(p);
     }
   } catch {
     /* storage unavailable */
