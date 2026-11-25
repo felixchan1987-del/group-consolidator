@@ -336,3 +336,76 @@ describe('intra-group dividends and unrealised profit', () => {
     expect(projectForPeriod(next, 'py').urp![0].closingInventory).toBe(100000);
   });
 });
+
+describe('intercompany matching by counterparty', () => {
+  const run = (p: ReturnType<typeof buildSampleProject>) => consolidate(projectForPeriod(p, 'cy'));
+
+  it('suggests counterparties from account names', async () => {
+    const { suggestCounterparty } = await import('./counterparty');
+    const p = buildSampleProject();
+    const [apex, beacon, cobalt] = p.entities;
+    expect(suggestCounterparty('Due to Apex Holdings', p.entities, beacon.id)).toBe(apex.id);
+    expect(suggestCounterparty('Loan from Cobalt', p.entities, apex.id)).toBe(cobalt.id);
+    expect(suggestCounterparty('Intercompany receivable', p.entities, apex.id)).toBeNull();
+    // the sample is tagged when built
+    const tags = Object.values(apex.counterparty ?? {});
+    expect(tags).toEqual([beacon.id, beacon.id]);
+  });
+
+  it('eliminates and reconciles each company pair and direction', () => {
+    const r = run(buildSampleProject());
+    const bal = r.icRecon.filter((x) => x.kind === 'balance');
+    expect(bal).toHaveLength(1);
+    expect(bal[0].debitName).toBe('Apex Holdings Inc'); // receivable from Beacon
+    expect(bal[0].creditName).toBe('Beacon Trading LLC'); // payable to Apex
+    close(bal[0].eliminated, 50000);
+    const pl = r.icRecon.filter((x) => x.kind === 'pl');
+    expect(pl[0].debitName).toBe('Beacon Trading LLC'); // management fee expense
+    close(pl[0].difference, 0);
+    close(r.consolidated['1150'] ?? 0, 0);
+    close(r.consolidated['4050'] ?? 0, 0);
+    expect(r.checks.filter((c) => c.level === 'warn')).toEqual([]);
+  });
+
+  it('reports a mismatch for the pair and leaves the difference visible', () => {
+    const p = buildSampleProject();
+    const beacon = p.entities[1];
+    const l = beacon.lines.find((x) => x.name === 'Due to Apex Holdings' && !x.period)!;
+    l.amount = -45000;
+    beacon.lines.find((x) => x.name === 'Checking' && !x.period)!.amount -= 5000; // keep the TB balanced
+    const r = run(p);
+    const row = r.icRecon.find((x) => x.kind === 'balance')!;
+    close(row.difference, 5000);
+    close(row.eliminated, 45000);
+    close(r.consolidated['1150'], 5000);
+    expect(r.checks.some((c) => c.message.startsWith('Intercompany mismatch: Apex Holdings Inc receivable from Beacon Trading LLC 50000 vs Beacon Trading LLC payable to Apex Holdings Inc 45000'))).toBe(true);
+  });
+
+  it('does not net mismatches between different pairs', () => {
+    // Apex says Cobalt owes it 30k; Beacon says it owes Apex 50k (and Apex says Beacon owes 50k): only the agreeing pair is eliminated
+    const p = buildSampleProject();
+    const [apex, , cobalt] = p.entities;
+    const add = (e: typeof apex, code: string, name: string, amount: number, map: string, cp?: string) => {
+      const ln = { id: `x${code}`, code, name, amount, sign: 'dr' as const, sourceId: 's' };
+      e.lines.push(ln);
+      e.mapping[lineKey(ln)] = map;
+      if (cp) e.counterparty![lineKey(ln)] = cp;
+    };
+    add(apex, '1151', 'Loan to Cobalt', 30000, '1150', cobalt.id);
+    add(apex, '1001', 'Bank', -30000, '1000');
+    const r = run(p);
+    const row = r.icRecon.find((x) => x.debitId === apex.id && x.creditId === cobalt.id)!;
+    close(row.eliminated, 0);
+    close(row.difference, 30000);
+    close(r.consolidated['1150'], 30000);
+  });
+
+  it('falls back to pooled matching for lines without a counterparty', () => {
+    const p = buildSampleProject();
+    for (const e of p.entities) e.counterparty = {};
+    const r = run(p);
+    close(r.consolidated['1150'] ?? 0, 0);
+    close(r.consolidated['2050'] ?? 0, 0);
+    expect(r.checks.some((c) => c.message.includes('have no counterparty'))).toBe(true);
+  });
+});

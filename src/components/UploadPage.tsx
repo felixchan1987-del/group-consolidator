@@ -4,6 +4,7 @@ import type { Project, SourceFile, TBLine } from '../types';
 import ImportDialog, { type ImportTarget } from './ImportDialog';
 import { readWorkbook, type ParsedSheet } from '../lib/importer';
 import { suggestMapping } from '../lib/automap';
+import { autoTagCounterparties } from '../lib/counterparty';
 import { SAMPLE, downloadSampleFile, downloadTemplate } from '../lib/sample';
 import { CURRENCIES, fmt, lineKey, newEntity } from '../lib/util';
 import { METHOD_SHORT } from '../lib/structure';
@@ -69,6 +70,7 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
         const s = suggestMapping(l.code, l.name, d.accounts, mem);
         if (s) e.mapping[k] = s.code;
       }
+      autoTagCounterparties(d);
     });
     setQueue((q) => q.slice(1));
   };

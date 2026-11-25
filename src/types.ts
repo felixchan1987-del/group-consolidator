@@ -88,6 +88,8 @@ export interface Entity {
    * time it was in the group (e.g. a TB at the disposal date). false/undefined = full-period TB, results are time-apportioned.
    */
   partialPeriodTB?: boolean;
+  /** local account key -> counterparty entity id, for lines mapped to intercompany accounts */
+  counterparty?: Record<string, string>;
 }
 
 export interface Holding {

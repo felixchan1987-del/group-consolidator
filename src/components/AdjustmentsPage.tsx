@@ -94,7 +94,7 @@ export default function AdjustmentsPage({ project, update, result, prior, go }: 
         <div className="card-b" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <label className="check">
             <input type="checkbox" checked={project.settings.autoEliminateIC} onChange={(e) => update((d) => void (d.settings.autoEliminateIC = e.target.checked))} />
-            Automatically eliminate balances mapped to Intercompany receivables/payables and Intercompany revenue/expenses
+            Automatically eliminate balances mapped to Intercompany receivables/payables and Intercompany revenue/expenses, matched company by company (counterparty set on the Account mapping page)
           </label>
           <p className="small muted">Matched amounts are eliminated; any mismatch stays visible in the consolidated accounts and is reported in the checks. Dividends and unrealised profit in inventory are handled below; use manual journals for anything else (e.g. profit on intra-group fixed asset transfers).</p>
         </div>

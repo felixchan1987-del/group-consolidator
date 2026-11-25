@@ -3,6 +3,7 @@ import { accountByRole, sortAccounts } from './coa';
 import { analyseStructure, heldOn, type Method, type StructureInfo } from './structure';
 import { fractionFrom, inPeriod, openingDate } from './periods';
 import { lineKey } from './util';
+import { IC_ROLES } from './counterparty';
 
 /** Balances are always debit-positive internally. */
 export type Balances = Record<string, number>;
@@ -42,6 +43,8 @@ export interface TranslationInfo {
   unmappedCount: number;
   local: Balances;
   translated: Balances;
+  /** intercompany amounts: role -> counterparty id ('' = not tagged) -> account -> translated amount */
+  ic: Record<string, Record<string, Balances>>;
 }
 
 export interface SubSchedule {
@@ -100,6 +103,20 @@ export interface UrpResult {
   nciShare: number;
 }
 
+export interface IcReconRow {
+  kind: 'balance' | 'pl';
+  /** company showing the receivable (balance) or the expense (P&L) */
+  debitId: string;
+  debitName: string;
+  debitAmount: number;
+  /** company showing the payable (balance) or the revenue (P&L) */
+  creditId: string;
+  creditName: string;
+  creditAmount: number;
+  eliminated: number;
+  difference: number;
+}
+
 export interface AssocSchedule {
   entityId: string;
   name: string;
@@ -122,6 +139,7 @@ export interface ConsolidationResult {
   disposals: DisposalSchedule[];
   dividends: DividendElimination[];
   urp: UrpResult[];
+  icRecon: IcReconRow[];
   associates: AssocSchedule[];
   profit: { total: number; nci: number; owners: number };
   nciTotal: number;
@@ -149,6 +167,7 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   let localSum = 0;
   let translatedSum = 0;
   let unmappedCount = 0;
+  const ic: TranslationInfo['ic'] = {};
   for (const l of e.lines) {
     const code = e.mapping[lineKey(l)];
     const acc = code ? accMap.get(code) : undefined;
@@ -158,6 +177,11 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
     const rate = !acc || acc.type === 'asset' || acc.type === 'liability' ? fx.closing : acc.type === 'equity' ? fx.historical : fx.average;
     add(local, key, amt);
     add(translated, key, amt * rate);
+    if (acc?.role && (IC_ROLES as readonly string[]).includes(acc.role)) {
+      const cp = e.counterparty?.[lineKey(l)] ?? '';
+      const byCp = (ic[acc.role] ??= {});
+      add((byCp[cp] ??= {}), acc.code, amt * rate);
+    }
     localSum += amt;
     translatedSum += amt * rate;
   }
@@ -165,7 +189,7 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   const cta = -(translatedSum - localSum * fx.closing);
   const fctr = accountByRole(accounts, 'fctr');
   if (fctr && Math.abs(cta) > 1e-9) add(translated, fctr.code, cta);
-  return { entityId: e.id, localSum, cta, unmappedCount, local, translated };
+  return { entityId: e.id, localSum, cta, unmappedCount, local, translated, ic };
 }
 
 /** Equity (credit positive) split: equity excl. FCTR & NCI, FCTR, and profit for the period. */
@@ -474,32 +498,68 @@ export function consolidate(p: Project): ConsolidationResult {
     disposals.push({ entityId: sid, name: s.name, date: structure.changeDate[sid], fraction: structure.fraction[sid], effective: g, proceeds, cost, netAssets, goodwill, nciDerecognised, fctrRecycled: g * f0, entityGain, groupGain });
   }
 
-  // 4. Intercompany eliminations (on aggregated consolidated entities; balances of disposed subsidiaries are no longer intra-group)
-  const agg: Balances = {};
-  for (const id of consolidatedIds)
-    for (const [k, v] of Object.entries(working[id])) {
-      const type = accounts.find((a) => a.code === k)?.type;
-      if (m[id] === 'disposed' && type !== 'revenue' && type !== 'expense') continue;
-      add(agg, k, v);
-    }
+  // 4. Intercompany eliminations, company by company.
+  //    Each direction is matched separately: what X shows as receivable from (or expense to) Y against what Y shows as
+  //    payable to (or revenue from) X. Lines without a counterparty are matched as one pool, as a fallback.
+  //    Year-end balances of subsidiaries disposed of in the period are no longer intra-group; their P&L up to disposal is.
+  const icRecon: IcReconRow[] = [];
   if (p.settings.autoEliminateIC) {
-    const sumRole = (r: string) => accounts.filter((a) => a.role === r).reduce((s, a) => s + (agg[a.code] ?? 0), 0);
-    const pairs: [string, string, string][] = [
-      ['ic_rec', 'ic_pay', 'Eliminate intercompany receivables / payables'],
-      ['ic_exp', 'ic_rev', 'Eliminate intercompany revenue / expenses'],
+    const defs = [
+      { kind: 'balance' as const, dr: 'ic_rec', cr: 'ic_pay', label: 'intercompany receivables / payables', drWord: 'receivable from', crWord: 'payable to' },
+      { kind: 'pl' as const, dr: 'ic_exp', cr: 'ic_rev', label: 'intercompany revenue / expenses', drWord: 'expense to', crWord: 'revenue from' },
     ];
-    for (const [drRole, crRole, desc] of pairs) {
-      const dr = sumRole(drRole); // debit balance expected
-      const cr = -sumRole(crRole); // credit balance expected
-      const drAcc = role(drRole as never),
-        crAcc = role(crRole as never);
-      if (!drAcc || !crAcc) continue;
-      const amt = Math.min(Math.max(dr, 0), Math.max(cr, 0));
-      if (amt > 0)
-        journals.push({ id: `ic_${drRole}`, column: 'ic', description: desc, postings: [{ account: crAcc, amount: amt }, { account: drAcc, amount: -amt }] });
-      if (Math.abs(dr - cr) > EPS)
-        checks.push({ level: 'warn', message: `${desc.replace('Eliminate ', '')}: mismatch of ${(dr - cr).toFixed(2)} ${p.presentationCurrency} left in the consolidated accounts.` });
-      else if (dr || cr) checks.push({ level: 'ok', message: `${desc.replace('Eliminate ', '')} agree (${amt.toFixed(0)}).` });
+    const total = (b: Balances) => Object.values(b).reduce((t, v) => t + v, 0);
+    /** spread `amount` over the accounts in b in proportion to their balances */
+    const alloc = (b: Balances, amount: number): Posting[] => {
+      const t = total(b);
+      return t ? Object.entries(b).map(([account, v]) => ({ account, amount: (amount * v) / t })) : [];
+    };
+    for (const d of defs) {
+      const members = consolidatedIds.filter((id) => d.kind === 'pl' || m[id] !== 'disposed');
+      const get = (id: string, r: string, cp: string): Balances => translation[id].ic[r]?.[cp] ?? {};
+      const postings: Posting[] = [];
+      const poolDr: Balances = {},
+        poolCr: Balances = {};
+      let untagged = 0;
+      for (const id of members) {
+        for (const [k, v] of Object.entries(get(id, d.dr, ''))) add(poolDr, k, v);
+        for (const [k, v] of Object.entries(get(id, d.cr, ''))) add(poolCr, k, v);
+        untagged += Object.keys(get(id, d.dr, '')).length + Object.keys(get(id, d.cr, '')).length;
+      }
+      for (const x of members)
+        for (const y of members) {
+          if (x === y) continue;
+          const xb = get(x, d.dr, y),
+            yb = get(y, d.cr, x);
+          const xa = total(xb),
+            ya = -total(yb);
+          if (Math.abs(xa) < 1e-9 && Math.abs(ya) < 1e-9) continue;
+          const matched = Math.min(Math.max(xa, 0), Math.max(ya, 0));
+          postings.push(...alloc(xb, -matched), ...alloc(yb, matched)); // Cr the debit side, Dr the credit side
+          icRecon.push({ kind: d.kind, debitId: x, debitName: name(x), debitAmount: xa, creditId: y, creditName: name(y), creditAmount: ya, eliminated: matched, difference: xa - ya });
+          if (Math.abs(xa - ya) > EPS)
+            checks.push({
+              level: 'warn',
+              message: `Intercompany mismatch: ${name(x)} ${d.drWord} ${name(y)} ${xa.toFixed(0)} vs ${name(y)} ${d.crWord} ${name(x)} ${ya.toFixed(0)} (difference ${(xa - ya).toFixed(0)} ${p.presentationCurrency}).`,
+            });
+        }
+      // amounts tagged to a company outside the consolidated set (e.g. an associate) are not eliminated
+      const pa = total(poolDr),
+        pc = -total(poolCr);
+      if (untagged) {
+        const matched = Math.min(Math.max(pa, 0), Math.max(pc, 0));
+        postings.push(...alloc(poolDr, -matched), ...alloc(poolCr, matched));
+        icRecon.push({ kind: d.kind, debitId: '', debitName: '(no counterparty)', debitAmount: pa, creditId: '', creditName: '(no counterparty)', creditAmount: pc, eliminated: matched, difference: pa - pc });
+        checks.push({
+          level: 'warn',
+          message: `${untagged} ${d.label} line(s) have no counterparty and were matched as one pool${Math.abs(pa - pc) > EPS ? ` (mismatch ${(pa - pc).toFixed(0)})` : ''} — set the counterparty on the Account mapping page to reconcile company by company.`,
+        });
+      }
+      const merged = mergePostings(postings);
+      if (merged.length) journals.push({ id: `ic_${d.dr}`, column: 'ic', description: `Eliminate ${d.label}`, postings: merged });
+      const rows = icRecon.filter((r) => r.kind === d.kind && r.debitId);
+      if (rows.length && rows.every((r) => Math.abs(r.difference) <= EPS))
+        checks.push({ level: 'ok', message: `${d.label[0].toUpperCase()}${d.label.slice(1)} agree for all ${rows.length} company pair(s).` });
     }
   }
 
@@ -569,6 +629,7 @@ export function consolidate(p: Project): ConsolidationResult {
     disposals,
     dividends,
     urp,
+    icRecon,
     associates,
     profit: { total: totalProfit, nci: nciProfitTotal, owners: totalProfit - nciProfitTotal },
     nciTotal,
