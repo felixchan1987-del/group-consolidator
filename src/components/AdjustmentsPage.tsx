@@ -1,10 +1,14 @@
 import type { PageProps } from '../App';
 import { AccountSelect } from './MappingPage';
 import { fmt, uid } from '../lib/util';
+import { periodEndOf } from '../lib/periods';
+import type { FxRates, Period } from '../types';
+
+const UNIT: FxRates = { closing: 1, average: 1, historical: 1 };
 
 const num = (v: string) => (v === '' ? 0 : Number(v));
 
-export default function AdjustmentsPage({ project, update, result, go }: PageProps) {
+export default function AdjustmentsPage({ project, update, result, prior, go }: PageProps) {
   const fxEnts = project.entities.filter((e) => e.currency !== project.presentationCurrency && result.structure.method[e.id] !== 'none');
   return (
     <section className="page">
@@ -21,49 +25,67 @@ export default function AdjustmentsPage({ project, update, result, go }: PagePro
         </button>
       </div>
 
-      <div className="card">
-        <div className="card-h">
-          <h3>Exchange rates (1 unit of functional currency = x {project.presentationCurrency})</h3>
-        </div>
-        {fxEnts.length === 0 ? (
-          <div className="card-b small muted">All group entities report in {project.presentationCurrency}. No translation needed.</div>
-        ) : (
-          <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Entity</th>
-                  <th>Currency</th>
-                  <th className="num">Closing rate</th>
-                  <th className="num">Average rate</th>
-                  <th className="num">Historical rate (equity)</th>
-                  <th className="num">Translation difference</th>
-                </tr>
-              </thead>
-              <tbody>
-                {fxEnts.map((e) => (
-                  <tr key={e.id}>
-                    <td>{e.name}</td>
-                    <td>{e.currency}</td>
-                    {(['closing', 'average', 'historical'] as const).map((k) => (
-                      <td key={k} className="num">
-                        <input
-                          type="number"
-                          step="0.0001"
-                          value={e.rates[k]}
-                          onChange={(ev) => update((d) => void (d.entities.find((x) => x.id === e.id)!.rates[k] = num(ev.target.value)))}
-                          style={{ width: 110, textAlign: 'right' }}
-                        />
-                      </td>
-                    ))}
-                    <td className="num">{fmt(-(result.translation[e.id]?.cta ?? 0), 0)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {(['cy', 'py'] as Period[])
+        .filter((per) => per === 'cy' || prior)
+        .map((per) => {
+          const res = per === 'cy' ? result : prior!;
+          return (
+            <div className="card" key={per}>
+              <div className="card-h">
+                <h3>
+                  Exchange rates — {per === 'cy' ? 'current' : 'prior'} period to {periodEndOf(project, per)} (1 unit of functional currency = x {project.presentationCurrency})
+                </h3>
+              </div>
+              {fxEnts.length === 0 ? (
+                <div className="card-b small muted">All group entities report in {project.presentationCurrency}. No translation needed.</div>
+              ) : (
+                <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Entity</th>
+                        <th>Currency</th>
+                        <th className="num">Closing rate</th>
+                        <th className="num">Average rate</th>
+                        <th className="num">Historical rate (equity)</th>
+                        <th className="num">Translation difference</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fxEnts.map((e) => {
+                        const rates = (per === 'cy' ? e.rates : e.ratesPrior) ?? UNIT;
+                        return (
+                          <tr key={e.id}>
+                            <td>{e.name}</td>
+                            <td>{e.currency}</td>
+                            {(['closing', 'average', 'historical'] as const).map((k) => (
+                              <td key={k} className="num">
+                                <input
+                                  type="number"
+                                  step="0.0001"
+                                  value={rates[k]}
+                                  onChange={(ev) =>
+                                    update((d) => {
+                                      const x = d.entities.find((y) => y.id === e.id)!;
+                                      if (per === 'cy') x.rates[k] = num(ev.target.value);
+                                      else x.ratesPrior = { ...(x.ratesPrior ?? UNIT), [k]: num(ev.target.value) };
+                                    })
+                                  }
+                                  style={{ width: 110, textAlign: 'right' }}
+                                />
+                              </td>
+                            ))}
+                            <td className="num">{fmt(-(res.translation[e.id]?.cta ?? 0), 0)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
 
       <div className="card">
         <div className="card-h">
@@ -102,6 +124,10 @@ export default function AdjustmentsPage({ project, update, result, go }: PagePro
               <div key={j.id} className="card">
                 <div className="card-h">
                   <input value={j.description} placeholder="Description" onChange={(e) => setJ((x) => void (x.description = e.target.value))} className="grow" />
+                  <select value={j.period ?? 'cy'} onChange={(e) => setJ((x) => void (x.period = e.target.value as Period))} aria-label="Period">
+                    <option value="cy">Current period</option>
+                    <option value="py">Prior period</option>
+                  </select>
                   {Math.abs(dr - cr) < 0.005 ? <span className="badge ok">Balanced</span> : <span className="badge err">Out by {fmt(dr - cr, 2)}</span>}
                   <button className="btn sm ghost danger" onClick={() => update((d) => void (d.journals = d.journals.filter((x) => x.id !== j.id)))}>
                     Delete

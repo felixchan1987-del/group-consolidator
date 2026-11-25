@@ -5,6 +5,7 @@ import { incomeStatement, balanceSheet } from './statements';
 import { detectColumns, detectHeaderRow, extractLines, readWorkbook } from './importer';
 import { sampleWorkbook, SAMPLE } from './sample';
 import { parseAmount } from './util';
+import { projectForPeriod, rollForward, shiftYears, hasPrior } from './periods';
 import * as XLSX from 'xlsx';
 
 const close = (a: number, b: number) => expect(a).toBeCloseTo(b, 2);
@@ -34,7 +35,7 @@ describe('group structure', () => {
 });
 
 describe('consolidation of the sample group', () => {
-  const r = consolidate(buildSampleProject());
+  const r = consolidate(projectForPeriod(buildSampleProject(), 'cy'));
 
   it('maps all sample accounts automatically', () => {
     for (const t of Object.values(r.translation)) expect(t.unmappedCount).toBe(0);
@@ -50,11 +51,11 @@ describe('consolidation of the sample group', () => {
   it('computes goodwill and NCI with the effective interest method', () => {
     const beacon = r.subsidiaries.find((s) => s.name === 'Beacon Trading LLC')!;
     const cobalt = r.subsidiaries.find((s) => s.name === 'Cobalt GmbH')!;
-    close(beacon.goodwill, 80000);
+    close(beacon.goodwill, 160000); // 800k - 80% x 800k
     close(beacon.nciOpening, 186000);
     close(beacon.nciProfit, 20000);
-    close(beacon.postAcqToGroup, 24000);
-    close(cobalt.goodwill, 202800);
+    close(beacon.postAcqToGroup, 104000); // 80% x (930k - 800k)
+    close(cobalt.goodwill, 228000); // 80% x (600k - 60% x 525k)
     close(cobalt.nciOpening, 195120);
     close(cobalt.nciProfit, 28080);
     close(r.nciTotal, 429200);
@@ -62,7 +63,7 @@ describe('consolidation of the sample group', () => {
 
   it('applies the equity method to the associate', () => {
     const d = r.associates[0];
-    close(d.pickups[0].reserves, 15000);
+    close(d.pickups[0].reserves, 45000); // 30% x (850k - 700k)
     close(d.pickups[0].profit, 30000);
   });
 
@@ -113,5 +114,52 @@ describe('entity name detection', () => {
     expect(guessEntityFromSheet([['Trial Balance'], ['Apex Holdings Inc'], ['As at 31 December 2026'], [], ['Account Code']], 4)).toBe('Apex Holdings Inc');
     expect(guessEntityFromSheet([['Code', 'Description']], 0)).toBeNull();
     expect(guessEntityName('COB_sap_trial_balance.xlsx')).toBe('COB');
+  });
+});
+
+describe('comparative periods', () => {
+  const p = buildSampleProject();
+  const cy = consolidate(projectForPeriod(p, 'cy'));
+  const py = consolidate(projectForPeriod(p, 'py'));
+
+  it('keeps the periods separate', () => {
+    expect(hasPrior(p)).toBe(true);
+    for (const e of projectForPeriod(p, 'py').entities) expect(e.lines.every((l) => l.period === 'py')).toBe(true);
+    for (const e of projectForPeriod(p, 'cy').entities) expect(e.lines.every((l) => !l.period || l.period === 'cy')).toBe(true);
+  });
+
+  it('consolidates the prior period with prior-period rates', () => {
+    expect(py.checks.filter((c) => c.level === 'error')).toEqual([]);
+    // 207k + 90k + EUR 45k x 1.07 + 30% x 90k
+    close(py.profit.total, 207000 + 90000 + 45000 * 1.07 + 27000);
+    const cobalt = py.subsidiaries.find((s) => s.name === 'Cobalt GmbH')!;
+    close(cobalt.equityExFx, 505000 * 1.05);
+  });
+
+  it('builds two-column statements that balance in both periods', () => {
+    const bs = balanceSheet(cy, py);
+    const ta = bs.find((l) => l.label === 'TOTAL ASSETS')!;
+    const tel = bs.find((l) => l.label === 'TOTAL EQUITY AND LIABILITIES')!;
+    close(ta.value, tel.value);
+    close(ta.prior!, tel.prior!);
+    expect(ta.prior).not.toBe(ta.value);
+    const is = incomeStatement(cy, py);
+    close(is.find((l) => l.label === 'PROFIT FOR THE PERIOD')!.prior!, py.profit.total);
+    expect(balanceSheet(cy).every((l) => l.prior === undefined)).toBe(true);
+  });
+
+  it('rolls forward: current becomes prior, period moves one year', () => {
+    const next = rollForward(p);
+    expect(next.periodEnd).toBe('2027-12-31');
+    expect(next.entities.every((e) => e.lines.every((l) => l.period === 'py'))).toBe(true);
+    expect(next.entities[0].lines.length).toBe(p.entities[0].lines.filter((l) => !l.period).length);
+    expect(next.entities[2].ratesPrior).toEqual(p.entities[2].rates);
+    const pyNext = consolidate(projectForPeriod(next, 'py'));
+    close(pyNext.profit.total, cy.profit.total);
+  });
+
+  it('shifts dates by whole years', () => {
+    expect(shiftYears('2024-02-29', 1)).toBe('2025-02-28');
+    expect(shiftYears('2026-12-31', -1)).toBe('2025-12-31');
   });
 });

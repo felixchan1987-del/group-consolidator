@@ -7,6 +7,8 @@ import { suggestMapping } from '../lib/automap';
 import { SAMPLE, downloadSampleFile, downloadTemplate } from '../lib/sample';
 import { CURRENCIES, fmt, lineKey, newEntity } from '../lib/util';
 import { METHOD_SHORT } from '../lib/structure';
+import { lineIn, periodEndOf, rollForward, shiftYears } from '../lib/periods';
+import type { Period } from '../types';
 
 interface Pending {
   fileName: string;
@@ -23,7 +25,7 @@ export function mappingMemory(p: Project): Record<string, string> {
   return mem;
 }
 
-export default function UploadPage({ project, update, result, go }: PageProps) {
+export default function UploadPage({ project, update, result, prior, go }: PageProps) {
   const [queue, setQueue] = useState<Pending[]>([]);
   const [over, setOver] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
@@ -54,8 +56,9 @@ export default function UploadPage({ project, update, result, go }: PageProps) {
         if (!d.parentId) d.parentId = e.id;
       }
       if (t.replace) {
-        e.lines = [];
-        e.sources = [];
+        const per = src.period ?? 'cy';
+        e.lines = e.lines.filter((l) => (l.period ?? 'cy') !== per);
+        e.sources = e.sources.filter((x) => (x.period ?? 'cy') !== per);
       }
       e.lines.push(...lines);
       e.sources.push(src);
@@ -83,6 +86,19 @@ export default function UploadPage({ project, update, result, go }: PageProps) {
           </p>
         </div>
         <div className="row">
+          {project.entities.some((e) => e.lines.some(lineIn('cy'))) && (
+            <button
+              className="btn"
+              title="Current-period data becomes the comparative; the old comparative is removed"
+              onClick={() =>
+                confirm(
+                  `Roll forward to the period ending ${shiftYears(project.periodEnd, 1)}?\n\nCurrent-period trial balances, rates and journals become the comparatives and the existing prior-period data is removed. Save the project first if you want to keep it.`,
+                ) && update((d) => Object.assign(d, rollForward(d)))
+              }
+            >
+              Roll forward to next period
+            </button>
+          )}
           <button className="btn" onClick={downloadTemplate}>
             Download blank template
           </button>
@@ -148,7 +164,6 @@ export default function UploadPage({ project, update, result, go }: PageProps) {
       ) : (
         <div className="grid cols-3">
           {project.entities.map((e) => {
-            const t = result.translation[e.id];
             const method = result.structure.method[e.id];
             return (
               <div key={e.id} className="card entity-card">
@@ -190,28 +205,21 @@ export default function UploadPage({ project, update, result, go }: PageProps) {
                     </label>
                   </div>
                   <dl className="kv">
-                    <dt>Lines</dt>
-                    <dd>{e.lines.length}</dd>
-                    <dt>Trial balance</dt>
-                    <dd>
-                      {!e.lines.length ? (
-                        <span className="badge warn">empty</span>
-                      ) : Math.abs(t.localSum) < 0.5 ? (
-                        <span className="badge ok">Balanced</span>
-                      ) : (
-                        <span className="badge err">
-                          Off by {fmt(t.localSum, 2)} {e.currency}
-                        </span>
-                      )}
-                    </dd>
-                    <dt>Mapping</dt>
-                    <dd>{t.unmappedCount ? <span className="badge warn">{t.unmappedCount} unmapped</span> : e.lines.length ? <span className="badge ok">Complete</span> : '–'}</dd>
+                    {(['cy', 'py'] as Period[]).map((per) => {
+                      const res = per === 'cy' ? result : prior;
+                      const n = e.lines.filter(lineIn(per)).length;
+                      if (per === 'py' && !n) return null;
+                      const t = res?.translation[e.id];
+                      return (
+                        <PeriodStatus key={per} label={per === 'cy' ? `Current (${periodEndOf(project, 'cy')})` : `Prior (${periodEndOf(project, 'py')})`} lines={n} localSum={t?.localSum ?? 0} unmapped={t?.unmappedCount ?? 0} currency={e.currency} />
+                      );
+                    })}
                   </dl>
                   <ul className="src-list">
                     {e.sources.map((s) => (
                       <li key={s.id}>
                         <span title={`Sheet: ${s.sheet} · ${new Date(s.importedAt).toLocaleString()}`}>
-                          📄 {s.fileName} <span className="muted small">· {s.system} · {s.lineCount} lines</span>
+                          📄 {s.fileName} <span className="muted small">· {(s.period ?? 'cy') === 'py' ? 'prior period' : 'current'} · {s.system} · {s.lineCount} lines</span>
                         </span>
                         <button
                           className="btn sm ghost"
@@ -252,5 +260,26 @@ export default function UploadPage({ project, update, result, go }: PageProps) {
         />
       )}
     </section>
+  );
+}
+
+function PeriodStatus({ label, lines, localSum, unmapped, currency }: { label: string; lines: number; localSum: number; unmapped: number; currency: string }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd className="row" style={{ gap: 6 }}>
+        {lines} lines
+        {!lines ? (
+          <span className="badge warn">empty</span>
+        ) : Math.abs(localSum) < 0.5 ? (
+          <span className="badge ok">Balanced</span>
+        ) : (
+          <span className="badge err">
+            Off by {fmt(localSum, 2)} {currency}
+          </span>
+        )}
+        {unmapped > 0 && <span className="badge warn">{unmapped} unmapped</span>}
+      </dd>
+    </>
   );
 }

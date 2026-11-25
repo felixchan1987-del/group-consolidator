@@ -1,4 +1,7 @@
-export type AccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
+/** cy = current period, py = prior (comparative) period */
+export type Period = 'cy' | 'py';
+
+export type AccountType ='asset' | 'liability' | 'equity' | 'revenue' | 'expense';
 
 /** Special roles the consolidation engine relies on. */
 export type AccountRole =
@@ -38,6 +41,8 @@ export interface TBLine {
   amount: number;
   sign: SignMode;
   sourceId: string;
+  /** defaults to 'cy' */
+  period?: Period;
 }
 
 export interface SourceFile {
@@ -47,6 +52,7 @@ export interface SourceFile {
   system: string;
   importedAt: string;
   lineCount: number;
+  period?: Period;
 }
 
 export type MethodOverride = 'auto' | 'full' | 'equity' | 'investment' | 'exclude';
@@ -66,6 +72,8 @@ export interface Entity {
   country: string;
   method: MethodOverride;
   rates: FxRates;
+  /** rates for the comparative period */
+  ratesPrior?: FxRates;
   lines: TBLine[];
   sources: SourceFile[];
   /** local account key -> group account code */
@@ -95,6 +103,7 @@ export interface ManualJournal {
   id: string;
   description: string;
   lines: JournalLine[];
+  period?: Period;
 }
 
 export interface Project {
