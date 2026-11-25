@@ -36,6 +36,20 @@ export interface Check {
   message: string;
 }
 
+export interface LineDetail {
+  lineId: string;
+  code: string;
+  name: string;
+  /** group account code, or UNMAPPED */
+  account: string;
+  /** debit-positive amount in the entity's currency */
+  local: number;
+  rate: number;
+  rateType: 'closing' | 'average' | 'historical';
+  translated: number;
+  sourceFile: string;
+}
+
 export interface TranslationInfo {
   entityId: string;
   localSum: number;
@@ -45,6 +59,8 @@ export interface TranslationInfo {
   translated: Balances;
   /** intercompany amounts: role -> counterparty id ('' = not tagged) -> account -> translated amount */
   ic: Record<string, Record<string, Balances>>;
+  /** every trial balance line with its mapping and translation, for drill-down */
+  details: LineDetail[];
 }
 
 export interface SubSchedule {
@@ -168,6 +184,8 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   let translatedSum = 0;
   let unmappedCount = 0;
   const ic: TranslationInfo['ic'] = {};
+  const details: LineDetail[] = [];
+  const files = new Map(e.sources.map((s) => [s.id, s.fileName]));
   for (const l of e.lines) {
     const code = e.mapping[lineKey(l)];
     const acc = code ? accMap.get(code) : undefined;
@@ -177,6 +195,17 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
     const rate = !acc || acc.type === 'asset' || acc.type === 'liability' ? fx.closing : acc.type === 'equity' ? fx.historical : fx.average;
     add(local, key, amt);
     add(translated, key, amt * rate);
+    details.push({
+      lineId: l.id,
+      code: l.code,
+      name: l.name,
+      account: key,
+      local: amt,
+      rate,
+      rateType: !acc || acc.type === 'asset' || acc.type === 'liability' ? 'closing' : acc.type === 'equity' ? 'historical' : 'average',
+      translated: amt * rate,
+      sourceFile: files.get(l.sourceId) ?? '',
+    });
     if (acc?.role && (IC_ROLES as readonly string[]).includes(acc.role)) {
       const cp = e.counterparty?.[lineKey(l)] ?? '';
       const byCp = (ic[acc.role] ??= {});
@@ -189,7 +218,7 @@ export function translateEntity(e: Entity, accounts: GroupAccount[], presentatio
   const cta = -(translatedSum - localSum * fx.closing);
   const fctr = accountByRole(accounts, 'fctr');
   if (fctr && Math.abs(cta) > 1e-9) add(translated, fctr.code, cta);
-  return { entityId: e.id, localSum, cta, unmappedCount, local, translated, ic };
+  return { entityId: e.id, localSum, cta, unmappedCount, local, translated, ic, details };
 }
 
 /** Equity (credit positive) split: equity excl. FCTR & NCI, FCTR, and profit for the period. */

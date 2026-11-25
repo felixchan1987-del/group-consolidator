@@ -409,3 +409,48 @@ describe('intercompany matching by counterparty', () => {
     expect(r.checks.some((c) => c.message.includes('have no counterparty'))).toBe(true);
   });
 });
+
+describe('drill-down', () => {
+  const scenarios = () => {
+    const plain = buildSampleProject();
+    const busy = buildSampleProject();
+    const [apex, beacon, cobalt] = busy.entities;
+    busy.holdings.find((h) => h.investeeId === cobalt.id)!.disposalDate = '2026-06-30';
+    busy.holdings.find((h) => h.investeeId === cobalt.id)!.proceeds = 700000;
+    busy.urp = [{ id: 'u', sellerId: beacon.id, buyerId: apex.id, description: '', closingInventory: 80000, openingInventory: 20000, rate: 30, basis: 'margin' }];
+    busy.journals = [{ id: 'j', description: 'Impairment', lines: [{ account: '5300', debit: 10000, credit: 0 }, { account: '1650', debit: 0, credit: 10000 }] }];
+    return { plain, busy };
+  };
+
+  for (const [label, p] of Object.entries(scenarios()))
+    for (const period of ['cy', 'py'] as const)
+      it(`ties every worksheet cell to its source lines and journals (${label}, ${period})`, async () => {
+        const { drill } = await import('./drilldown');
+        const { UNMAPPED } = await import('./consolidate');
+        const r = consolidate(projectForPeriod(p, period));
+        let cells = 0;
+        for (const row of r.rows)
+          for (const c of r.columns) {
+            const d = drill(r, row.code === '—' ? UNMAPPED : row.code, c.key);
+            close(d.total, row.values[c.key]);
+            cells++;
+          }
+        expect(cells).toBeGreaterThan(100);
+      });
+
+  it('lists the source lines with their translation', async () => {
+    const { drill } = await import('./drilldown');
+    const r = consolidate(projectForPeriod(buildSampleProject(), 'cy'));
+    const d = drill(r, '1000');
+    const cobalt = d.entities.find((e) => e.lines.some((l) => l.name === 'Bank Deutsche Bank'))!;
+    const l = cobalt.lines[0];
+    close(l.local, 150000);
+    close(l.rate, 1.1);
+    expect(l.rateType).toBe('closing');
+    expect(l.sourceFile).toBe('COB_trial_balance.xlsx');
+    close(d.total, r.consolidated['1000']);
+    // FCTR includes the calculated translation difference
+    const f = drill(r, '3300');
+    close(f.entities[0].cta, -28500);
+  });
+});
