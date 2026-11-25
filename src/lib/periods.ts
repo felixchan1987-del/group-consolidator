@@ -37,6 +37,7 @@ export function projectForPeriod(p: Project, period: Period): Project {
       sources: e.sources.filter(lineIn(period)),
     })),
     journals: p.journals.filter(lineIn(period)),
+    urp: (p.urp ?? []).filter(lineIn(period)),
   };
 }
 
@@ -53,6 +54,12 @@ export function rollForward(p: Project): Project {
     e.ratesPrior = { ...e.rates };
   }
   next.journals = p.journals.filter(lineIn('cy')).map((j) => ({ ...j, period: 'py' as const }));
+  // URP: this period's entries become comparatives; next period starts from their closing inventory as opening
+  const cur = (p.urp ?? []).filter(lineIn('cy'));
+  next.urp = [
+    ...cur.map((u) => ({ ...u, period: 'py' as const })),
+    ...cur.map((u) => ({ ...u, id: `${u.id}_n`, period: 'cy' as const, openingInventory: u.closingInventory, closingInventory: 0 })),
+  ];
   return next;
 }
 

@@ -81,6 +81,25 @@ export interface DisposalSchedule {
   groupGain: number;
 }
 
+export interface DividendElimination {
+  payerId: string;
+  payerName: string;
+  holderId: string;
+  holderName: string;
+  /** dividends declared by the payer x holding % */
+  amount: number;
+}
+
+export interface UrpResult {
+  id: string;
+  sellerName: string;
+  buyerName: string;
+  closingUrp: number;
+  openingUrp: number;
+  /** share borne by NCI (upstream sales by partly owned subsidiaries) */
+  nciShare: number;
+}
+
 export interface AssocSchedule {
   entityId: string;
   name: string;
@@ -101,6 +120,8 @@ export interface ConsolidationResult {
   consolidated: Balances;
   subsidiaries: SubSchedule[];
   disposals: DisposalSchedule[];
+  dividends: DividendElimination[];
+  urp: UrpResult[];
   associates: AssocSchedule[];
   profit: { total: number; nci: number; owners: number };
   nciTotal: number;
@@ -235,6 +256,73 @@ export function consolidate(p: Project): ConsolidationResult {
     });
     for (const ps of postings) add(b, ps.account, ps.amount);
     checks.push({ level: 'ok', message: `${e.name}: ${acquired ? 'acquired' : 'disposed of'} on ${date}; results time-apportioned (${(f * 100).toFixed(1)}% of the period).` });
+  }
+
+  // 1c. Intra-group dividends: the holder's dividend income is replaced by a credit to its retained earnings.
+  //     Posted at holder level, so NCI of a partly owned holder and the payer's reduced equity both come out right.
+  const dividends: DividendElimination[] = [];
+  const divPaid = accounts.filter((a) => a.role === 'div_paid').map((a) => a.code);
+  const icDiv = role('ic_div');
+  if (p.settings.autoEliminateDividends !== false && divPaid.length && icDiv && role('retained')) {
+    const expected: Record<string, number> = {};
+    for (const payer of p.entities) {
+      const pm = m[payer.id];
+      if (pm !== 'full' && pm !== 'disposed' && pm !== 'equity') continue;
+      const src = working[payer.id] ?? translation[payer.id].translated;
+      const declared = divPaid.reduce((t, c) => t + (src[c] ?? 0), 0); // debit balance
+      if (declared <= 0.005) continue;
+      const holds = p.holdings.filter(
+        (h) => h.investeeId === payer.id && (m[h.holderId] === 'parent' || m[h.holderId] === 'full') && (heldOn(h, end) || (pm === 'disposed' && heldOn(h, opening))),
+      );
+      for (const h of holds) {
+        const amount = declared * (h.pct / 100);
+        dividends.push({ payerId: payer.id, payerName: payer.name, holderId: h.holderId, holderName: name(h.holderId), amount });
+        expected[h.holderId] = (expected[h.holderId] ?? 0) + amount;
+        const postings: Posting[] = [
+          { account: icDiv, amount },
+          { account: role('retained')!, amount: -amount },
+        ];
+        journals.push({ id: `div_${h.id}`, column: 'ic', description: `Eliminate dividend from ${payer.name} received by ${name(h.holderId)} (${h.pct}% of ${declared.toFixed(0)})`, postings });
+        for (const ps of postings) add(working[h.holderId], ps.account, ps.amount);
+      }
+    }
+    for (const id of consolidatedIds) {
+      const recorded = -(translation[id].translated[icDiv] ?? 0);
+      const exp = expected[id] ?? 0;
+      if (Math.abs(recorded - exp) > EPS)
+        checks.push({
+          level: 'warn',
+          message: `${name(id)} recorded intra-group dividend income of ${recorded.toFixed(0)}, but group companies declared ${exp.toFixed(0)} to it — check the mapping of dividend accounts (payer: "Dividends declared", receiver: "Dividend income from group companies").`,
+        });
+    }
+  }
+
+  // 1d. Unrealised profit in inventory, posted at the seller's level so NCI bears its share of upstream sales.
+  const urp: UrpResult[] = [];
+  const cogs = role('cogs'),
+    inventory = role('inventory');
+  for (const u of p.urp ?? []) {
+    const factor = u.basis === 'markup' ? u.rate / (100 + u.rate) : u.rate / 100;
+    const closingUrp = (u.closingInventory || 0) * factor;
+    const openingUrp = (u.openingInventory || 0) * factor;
+    if (!closingUrp && !openingUrp) continue;
+    const both = isCons(u.sellerId) && isCons(u.buyerId) && m[u.sellerId] !== 'disposed' && m[u.buyerId] !== 'disposed';
+    if (!both) {
+      checks.push({ level: 'warn', message: `Unrealised profit "${u.description || `${name(u.sellerId)} → ${name(u.buyerId)}`}": seller and buyer must both be consolidated subsidiaries; URP with associates is not automated.` });
+      continue;
+    }
+    if (!cogs || !inventory || !role('retained')) {
+      checks.push({ level: 'error', message: 'Unrealised profit needs group accounts with the roles "cogs", "inventory" and "retained".' });
+      break;
+    }
+    const postings: Posting[] = [
+      { account: cogs, amount: closingUrp - openingUrp },
+      { account: inventory, amount: -closingUrp },
+      { account: role('retained')!, amount: openingUrp },
+    ].filter((x) => Math.abs(x.amount) > 1e-9);
+    journals.push({ id: `urp_${u.id}`, column: 'ic', description: `Unrealised profit in inventory: ${name(u.sellerId)} → ${name(u.buyerId)}${u.description ? ` (${u.description})` : ''}`, postings });
+    for (const ps of postings) add(working[u.sellerId], ps.account, ps.amount);
+    urp.push({ id: u.id, sellerName: name(u.sellerId), buyerName: name(u.buyerId), closingUrp, openingUrp, nciShare: (1 - structure.effective[u.sellerId]) * (closingUrp - openingUrp) });
   }
 
   // 2. Equity accounting for associates (posted at holder level so the holder's NCI shares in it)
@@ -479,6 +567,8 @@ export function consolidate(p: Project): ConsolidationResult {
     consolidated,
     subsidiaries,
     disposals,
+    dividends,
+    urp,
     associates,
     profit: { total: totalProfit, nci: nciProfitTotal, owners: totalProfit - nciProfitTotal },
     nciTotal,

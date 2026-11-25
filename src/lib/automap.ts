@@ -13,6 +13,8 @@ const RULES: Rule[] = [
   { test: /investment.{0,6}(in )?(subsidiar|group compan)/, code: '1700' },
   { test: /investment.{0,6}(in )?(associate|joint venture|jv)/, code: '1710' },
   { test: /goodwill/, code: '1650' },
+  { test: /dividends? (paid|declared|distributed|payable to shareholders)|interim dividend|final dividend|distributions? to (shareholders|owners)/, code: '3250' },
+  { test: /dividend.{0,30}(subsidiar|group|related|inter.?company|intra.?group)|(subsidiar|group|inter.?company|intra.?group).{0,30}dividend/, code: '4060' },
   { test: /(inter.?company|intra.?group|related part|due (from|to)|group compan)/, code: '__ic' },
   { test: /(investment|interest|dividend) (income|revenue|received)|finance income/, code: '4300' },
   { test: /deferred tax/, code: '2600' },
