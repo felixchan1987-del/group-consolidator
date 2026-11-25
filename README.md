@@ -21,6 +21,11 @@ npm run build      # static site in dist/ (deploy anywhere: GitHub Pages, Netlif
 
 Click **Load sample** in the top bar to load a four-company demo group: a US parent, an 80% subsidiary, a 60% EUR sub-subsidiary (48% effective) and a 30% associate. Or download the sample files on the Upload page to try the importer.
 
+## Hosting
+
+Every push to `main` runs the tests, builds the site and deploys it to GitHub Pages (`.github/workflows/deploy.yml`). Pull requests run the tests and build only.
+The site is static: it has no server, and uploaded files never leave the user's browser.
+
 ## Supported import layouts
 
 Column detection is automatic: it finds the header row, code/name/debit/credit/balance columns, and combined "1000 · Cash" account cells. Presets add hints for:
