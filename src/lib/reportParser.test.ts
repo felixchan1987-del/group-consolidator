@@ -40,6 +40,7 @@ describe('cell parsing', () => {
     expect(splitLabel('Sales (200)')).toEqual({ code: '200', name: 'Sales' });
     expect(splitLabel('200 - Sales')).toEqual({ code: '200', name: 'Sales' });
     expect(splitLabel('1-1100 Cheque Account')).toEqual({ code: '1-1100', name: 'Cheque Account' });
+    expect(splitLabel('Civils - Bundaberg (BDB1)')).toEqual({ code: '', name: 'Civils - Bundaberg (BDB1)' });
     expect(splitLabel('Accounts Receivable')).toEqual({ code: '', name: 'Accounts Receivable' });
   });
 });

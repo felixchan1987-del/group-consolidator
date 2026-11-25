@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Period, Project, SignMode, SourceFile, TBLine } from '../types';
-import { periodEndOf } from '../lib/periods';
+import { periodEndOf, periodMonths, periodStartOf } from '../lib/periods';
 import { COL_ROLE_LABELS, SYSTEMS, detectColumns, detectHeaderRow, extractLines, guessEntityFromSheet, guessEntityName, type ColRole, type ParsedSheet } from '../lib/importer';
-import { analyseReport, looksLikeReport, reportToLines, type ReportAnalysis } from '../lib/reportParser';
+import { analyseReport, defaultColPeriods, looksLikeReport, reportToLines, type ColPeriod, type ReportAnalysis } from '../lib/reportParser';
 import { CURRENCIES, fmt, uid } from '../lib/util';
 
 export interface ImportTarget {
@@ -19,11 +19,11 @@ interface Props {
   queueInfo: string;
   onImport: (target: ImportTarget, lines: TBLine[], sources: SourceFile[]) => void;
   onSkip: () => void;
-  onSetPeriodEnd: (date: string) => void;
+  /** set the reporting period: end date, and optionally the first day (year-to-date reporting) */
+  onSetPeriod: (end: string, start?: string) => void;
 }
 
 type Mode = 'report' | 'table';
-type ColPeriod = Period | 'skip';
 
 const KIND_LABEL: Record<ReportAnalysis['kind'], string> = {
   balance_sheet: 'Balance sheet report',
@@ -31,33 +31,9 @@ const KIND_LABEL: Record<ReportAnalysis['kind'], string> = {
   report: 'Financial report',
 };
 
-/** Default period for each amount column: by date, then by year, then left-to-right (current, prior). */
-function defaultColPeriods(a: ReportAnalysis, project: Project): ColPeriod[] {
-  const cy = periodEndOf(project, 'cy'),
-    py = periodEndOf(project, 'py');
-  const out: (ColPeriod | null)[] = a.amountCols.map((c) => (c.date === cy ? 'cy' : c.date === py ? 'py' : null));
-  a.amountCols.forEach((c, i) => {
-    if (out[i]) return;
-    if (c.year === +cy.slice(0, 4) && !out.includes('cy')) out[i] = 'cy';
-    else if (c.year === +py.slice(0, 4) && !out.includes('py')) out[i] = 'py';
-  });
-  const datesKnown = a.amountCols.some((c) => c.date || c.year);
-  a.amountCols.forEach((_, i) => {
-    if (out[i]) return;
-    if (!datesKnown && !out.includes('cy')) out[i] = 'cy';
-    else if (!datesKnown && !out.includes('py')) out[i] = 'py';
-    else out[i] = 'skip';
-  });
-  // dated columns that match neither period: take the newest as current and the next as prior
-  if (!out.includes('cy') && !out.includes('py') && datesKnown) {
-    const order = a.amountCols.map((c, i) => ({ i, key: c.date ?? `${c.year}-12-31` })).sort((x, y) => (x.key < y.key ? 1 : -1));
-    if (order[0]) out[order[0].i] = 'cy';
-    if (order[1]) out[order[1].i] = 'py';
-  }
-  return out as ColPeriod[];
-}
+const longDate = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 
-export default function ImportDialog({ fileName, sheets, project, queueInfo, onImport, onSkip, onSetPeriodEnd }: Props) {
+export default function ImportDialog({ fileName, sheets, project, queueInfo, onImport, onSkip, onSetPeriod }: Props) {
   const [sheetIdx, setSheetIdx] = useState(() => {
     const r = sheets.findIndex((s) => looksLikeReport(s.rows));
     if (r >= 0) return r;
@@ -109,7 +85,10 @@ export default function ImportDialog({ fileName, sheets, project, queueInfo, onI
   const existing = project.entities.find((e) => e.name.toLowerCase() === guessed.toLowerCase() || (e.code.length >= 2 && e.code.toLowerCase() === fileStem));
   const [target, setTarget] = useState<string>(existing?.id ?? 'new');
   const [newName, setNewName] = useState(guessed);
-  const [currency, setCurrency] = useState(project.presentationCurrency);
+  const [currency, setCurrency] = useState(() => {
+    const c = analyseReport(sheets[sheetIdx]?.rows ?? []).currency;
+    return c && CURRENCIES.includes(c) ? c : project.presentationCurrency;
+  });
   const [replace, setReplace] = useState(false);
 
   // ---- results
@@ -206,7 +185,7 @@ export default function ImportDialog({ fileName, sheets, project, queueInfo, onI
                 else delete next[i];
                 setOverrides(next);
               }}
-              onSetPeriodEnd={onSetPeriodEnd}
+              onSetPeriod={onSetPeriod}
             />
           ) : (
             <TableView rows={rows} headerRow={headerRow} roles={roles} setRoles={setRoles} />
@@ -282,14 +261,14 @@ function ReportView({
   project,
   onColPeriod,
   onToggle,
-  onSetPeriodEnd,
+  onSetPeriod,
 }: {
   report: ReportAnalysis;
   colPeriods: ColPeriod[];
   project: Project;
   onColPeriod: (col: number, p: ColPeriod) => void;
   onToggle: (row: number, to: 'account' | 'excluded' | null) => void;
-  onSetPeriodEnd: (date: string) => void;
+  onSetPeriod: (end: string, start?: string) => void;
 }) {
   const shown = report.rows.filter((r) => r.type !== 'blank');
   const cy = periodEndOf(project, 'cy');
@@ -297,24 +276,60 @@ function ReportView({
   const newest = [...dates, report.reportDate ?? ''].filter(Boolean).sort().pop();
   const mismatch = newest && !dates.includes(cy) && newest !== cy;
   const dup = (['cy', 'py'] as const).filter((p) => colPeriods.filter((x) => x === p).length > 1);
+  const hasData = project.entities.some((e) => e.lines.length);
+  const start = periodStartOf(project, 'cy');
+  // Year to date column = sum of the month columns: we know exactly which period the P&L covers
+  const ytdEnd = report.amountCols.find((c) => c.ytd)?.date ?? null;
+  const ytdPeriod = report.ytdStart && ytdEnd ? { start: report.ytdStart, end: ytdEnd } : null;
+  const ytdDiffers = ytdPeriod && (ytdPeriod.start !== start || ytdPeriod.end !== cy);
+  const monthCols = report.amountCols.filter((c) => c.month).length;
+  const ytdCol = report.amountCols.some((c) => c.ytd);
 
   if (!report.amountCols.length) return <div className="callout warn small">No amount columns found in this sheet. Try the "Table / trial balance" layout.</div>;
 
   return (
     <>
-      {mismatch && (
+      {ytdPeriod && ytdDiffers && (ytdPeriod.end === cy || !hasData) && (
+        <div className="callout warn small row">
+          <span>
+            The <b>Year to date</b> column adds up the month columns, so this P&L covers <b>{longDate(ytdPeriod.start)} – {longDate(ytdPeriod.end)}</b> ({periodMonths(ytdPeriod.start, ytdPeriod.end)} months). The project period is{' '}
+            {longDate(start)} – {longDate(cy)}.
+          </span>
+          <button className="btn sm" onClick={() => onSetPeriod(ytdPeriod.end, ytdPeriod.start)}>
+            Use {longDate(ytdPeriod.start)} – {longDate(ytdPeriod.end)}
+          </button>
+        </div>
+      )}
+      {report.kind !== 'balance_sheet' && monthCols > 0 && (
+        <p className="small muted">
+          {ytdCol
+            ? 'Monthly layout: the Year to date column is imported; the single-month columns are shown for reference (set one to Current or Prior to use it instead).'
+            : `Monthly layout: set every month you want to include to Current (or Prior) and they are added up${project.periodStart ? '' : ' — or set the period start in the header bar and the months inside the period are picked for you'}.`}
+        </p>
+      )}
+      {report.kind === 'balance_sheet' && report.amountCols.length > 1 && !colPeriods.includes('py') && (
+        <p className="small muted">
+          Only the column dated {cy} is imported. Other columns are left out (a comparative is the same date one year earlier, {periodEndOf(project, 'py')}).
+        </p>
+      )}
+      {mismatch && !(ytdPeriod && ytdDiffers && (ytdPeriod.end === cy || !hasData)) && (
         <div className="callout warn small row">
           <span>
             This report is dated <b>{newest}</b> but the project's period end is <b>{cy}</b>.
           </span>
-          {!project.entities.some((e) => e.lines.length) && (
-            <button className="btn sm" onClick={() => onSetPeriodEnd(newest!)}>
+          {!hasData && (
+            <button className="btn sm" onClick={() => onSetPeriod(newest!)}>
               Use {newest} as period end
             </button>
           )}
         </div>
       )}
-      {dup.length > 0 && <div className="callout warn small">Two columns are set to the same period — their amounts would be added together.</div>}
+      {dup.length > 0 &&
+        (report.kind === 'balance_sheet' ? (
+          <div className="callout warn small">Two balance sheet columns are set to the same period — balances at different dates would be added together.</div>
+        ) : (
+          <p className="small muted">Columns set to the same period are added together.</p>
+        ))}
       <p className="small muted">
         Rows are classified automatically. <b>Click a row</b> to include or exclude it. Totals are recomputed from the account lines: ✓ means the report's total agrees.
       </p>
@@ -326,11 +341,11 @@ function ReportView({
               <th>Line</th>
               {report.codeCol >= 0 && <th>Code</th>}
               {report.amountCols.map((c, i) => (
-                <th key={c.col} className="num">
+                <th key={c.col} className={`num${colPeriods[i] === 'skip' ? ' col-skip' : ''}`}>
                   <div className="small" style={{ fontWeight: 600 }}>{c.header || `Column ${c.col + 1}`}</div>
                   <select value={colPeriods[i]} onChange={(e) => onColPeriod(c.col, e.target.value as ColPeriod)} aria-label={`Period for ${c.header}`}>
-                    <option value="cy">Current ({cy.slice(0, 4)})</option>
-                    <option value="py">Prior ({periodEndOf(project, 'py').slice(0, 4)})</option>
+                    <option value="cy">Current (to {cy})</option>
+                    <option value="py">Prior (to {periodEndOf(project, 'py')})</option>
                     <option value="skip">Don't import</option>
                   </select>
                 </th>
@@ -365,7 +380,7 @@ function ReportView({
                   </td>
                   {report.codeCol >= 0 && <td className="small">{r.code}</td>}
                   {r.amounts.map((v, k) => (
-                    <td key={k} className="num">
+                    <td key={k} className={`num${colPeriods[k] === 'skip' ? ' col-skip' : ''}`}>
                       {v === null ? '' : fmt(v, 2)}
                       {r.check?.[k] === 'ok' && <span className="chk ok"> ✓</span>}
                       {r.check?.[k] === 'diff' && <span className="chk err"> ✗</span>}

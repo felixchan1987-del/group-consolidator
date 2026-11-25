@@ -53,6 +53,8 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
       let e = t.entityId ? d.entities.find((x) => x.id === t.entityId) : undefined;
       if (!e) {
         e = newEntity(t.newName, t.currency);
+        // the first company in an empty project sets the presentation currency
+        if (!d.entities.length) d.presentationCurrency = t.currency;
         d.entities.push(e);
         if (!d.parentId) d.parentId = e.id;
       }
@@ -267,7 +269,13 @@ export default function UploadPage({ project, update, result, prior, go }: PageP
           queueInfo={total > 1 ? `File ${total - queue.length + 1} of ${total}` : 'Check the detected columns, then import'}
           onImport={onImport}
           onSkip={() => setQueue((q) => q.slice(1))}
-          onSetPeriodEnd={(date) => update((d) => void (d.periodEnd = date))}
+          onSetPeriod={(end, start) =>
+            update((d) => {
+              d.periodEnd = end;
+              if (start) d.periodStart = start;
+              else if (d.periodStart && !(d.periodStart <= end && d.periodStart > shiftYears(end, -1))) delete d.periodStart;
+            })
+          }
         />
       )}
     </section>

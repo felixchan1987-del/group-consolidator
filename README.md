@@ -39,7 +39,17 @@ Balance sheet and P&L exports (Xero, QuickBooks, MYOB, Sage and similar) are rec
 - In the preview, click any row to exclude it or to import a total-looking row as an account.
 - "Current Year Earnings" on a balance sheet is left out automatically once the same company's P&L for that period is imported. Otherwise it stays in equity, with a warning.
 - Codes written as "Sales (200)" or "200 - Sales" are split. Text amounts with thousands separators, brackets, non-breaking spaces or "−" are understood.
-- Mapping suggestions use the section as context. For example, "GST" under Current Liabilities becomes a liability, and an unknown line under Fixed Assets falls back to property, plant and equipment.
+- Mapping suggestions use the section as context. For example, "GST" under Current Liabilities becomes a liability, and an unknown line under Fixed Assets falls back to property, plant and equipment. Current / non-current headings decide between short- and long-term borrowings. Lines under Cost of Sales go to cost of sales. An "Intercompany loan" under liabilities becomes an intercompany payable.
+- Headings and totals indented into separate columns (Xero puts sections, sub-sections and accounts in different columns) are followed by indent level. A heading in the account column, such as a site name like "SYD1 (Sydney)", becomes a sub-section and its code-like prefix is not taken as an account code.
+- Totals saved as formulas without a stored result (Xero exports them this way, so other readers see 0) are calculated when the file is read. The formulas covered are SUM, + − × ÷ and brackets.
+- Exchange-rate notes under the report are ignored, and the reporting currency they mention ("… into AUD") becomes the company's currency.
+
+### Monthly reports and year-to-date periods
+
+- **Balance sheet with several month-end columns** (e.g. 30 Sept and 31 Aug): only the column at the project's period end is imported. Last month is not a comparative; the comparative is the same date a year earlier.
+- **P&L with month columns and a Year to date column:** the Year to date column is imported and the single months are shown for reference. If the Year to date column equals the sum of the months, the tool knows the period it covers, e.g. 1 Jul – 30 Sep. It then offers to set the project period to match.
+- **P&L with month columns only:** set each month you want to Current and they are added up. If a period start is set, the months inside the period are picked for you.
+- **Period start** (header bar, *Period … to …*): leave it at the default for 12-month periods, or set it for year-to-date management accounts. Mid-period acquisitions and disposals are then time-apportioned over that period, e.g. 61 of 92 days. Comparatives use the same dates a year earlier.
 
 ### Trial balances and other tables
 

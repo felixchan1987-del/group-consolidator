@@ -150,6 +150,8 @@ export interface Project {
   version: 1;
   name: string;
   periodEnd: string;
+  /** first day of the current period when it is not the 12 months to the period end (year-to-date reporting) */
+  periodStart?: string;
   presentationCurrency: string;
   parentId: string | null;
   entities: Entity[];

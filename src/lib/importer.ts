@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { evaluateFormulas } from './formulas';
 import type { SignMode, TBLine } from '../types';
 import { parseAmount, uid } from './util';
 
@@ -90,11 +91,12 @@ export interface ParsedSheet {
 }
 
 export function readWorkbook(data: ArrayBuffer): ParsedSheet[] {
-  const wb = XLSX.read(data, { type: 'array', cellDates: true });
-  return wb.SheetNames.map((name) => ({
-    name,
-    rows: XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: false }),
-  }));
+  const wb = XLSX.read(data, { type: 'array', cellDates: true, cellFormula: true });
+  return wb.SheetNames.map((name) => {
+    // totals saved as formulas without results (Xero) would otherwise read as 0
+    evaluateFormulas(wb.Sheets[name]);
+    return { name, rows: XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: false }) };
+  });
 }
 
 const norm = (v: unknown) =>

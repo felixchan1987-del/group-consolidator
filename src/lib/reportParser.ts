@@ -3,10 +3,11 @@
  * straight from the exported sheet: title rows, period columns, section headings, account lines and totals.
  * Signs come from the section an account sits in, and the report's own totals are used to check the result.
  */
-import type { Period, TBLine } from '../types';
+import type { Period, Project, TBLine } from '../types';
+import { periodEndOf, periodStartOf } from './periods';
 import { parseAmount, uid } from './util';
 
-export type RowType = 'blank' | 'title' | 'header' | 'heading' | 'account' | 'total' | 'excluded';
+export type RowType = 'blank' | 'title' | 'header' | 'heading' | 'account' | 'total' | 'excluded' | 'note';
 export type Nature = 'dr' | 'cr';
 
 export interface ReportRow {
@@ -32,6 +33,10 @@ export interface AmountColumn {
   /** ISO date read from the column header, if any */
   date: string | null;
   year: number | null;
+  /** "Year to date" column (its date is the report date) */
+  ytd: boolean;
+  /** a single calendar month ("Sept 2026"), as in monthly P&L columns */
+  month: boolean;
 }
 
 export interface ReportAnalysis {
@@ -44,6 +49,10 @@ export interface ReportAnalysis {
   reportDate: string | null;
   /** totals compared with the lines: [agreeing, checked] */
   totals: { agree: number; checked: number };
+  /** reporting currency stated in the report (e.g. Xero's "… convert foreign currency into AUD" note) */
+  currency: string | null;
+  /** when the Year to date column equals the sum of the month columns: the first day of the earliest month */
+  ytdStart: string | null;
   /** per amount column, sum of debit-positive account amounts (0 for a balance sheet that balances; -profit for a P&L) */
   balance: number[];
 }
@@ -66,6 +75,7 @@ export function strictAmount(v: unknown): number | null {
   if (typeof v !== 'string') return null;
   const s = (clean(v) as string).replace(/[−–]/g, '-');
   if (!s || !AMOUNT_RE.test(s)) return null;
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s-]+\d/i.test(s)) return null; // "Aug 2026" is a heading, not 2026
   if (/^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/.test(s)) return null; // 31/12/2026
   return parseAmount(s);
 }
@@ -133,6 +143,11 @@ export function headingNature(label: string): Nature | null {
 const ROOT_RE = /^(less[: ]+)?(assets|liabilities|equity|capital and reserves|shareholders'? equity|owners'? equity|income|revenue|trading income|sales|other income|cost of sales|cost of goods sold|direct costs|expenses|operating expenses|overheads|other expenses|non-operating expenses|liabilities and equity)$/i;
 const CURRENT_EARNINGS_RE = /current (year|period)'?s? (earnings|profit|surplus|result|net income)|profit (for|of) the (current )?(year|period)|net (income|profit) for the (year|period)|unallocated profit|undistributed current/i;
 
+const YTD_RE = /\b(year|fy|financial year|period)[ -]to[ -]date\b|\bytd\b|\bcumulative\b/i;
+/** "Sept 2026", "Sep-26", "September 2026" — a month without a day */
+const MONTH_ONLY_RE = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[\s-]+(\d{4}|\d{2})$/i;
+const monthIndex = (d: string) => +d.slice(0, 4) * 12 + +d.slice(5, 7);
+
 const isText = (v: unknown) => typeof v === 'string' && (clean(v) as string).length > 0 && strictAmount(v) === null;
 const CODE_RE = /^[A-Za-z]{0,3}[-.]?\d[\d.\-/]{0,11}$/;
 
@@ -140,7 +155,8 @@ const CODE_RE = /^[A-Za-z]{0,3}[-.]?\d[\d.\-/]{0,11}$/;
 export function splitLabel(label: string): { code: string; name: string } {
   const t = label.trim();
   const tail = t.match(/^(.+?)\s*\((\w{0,3}[-.]?\d[\w.\-/]{0,11})\)$/);
-  if (tail) return { code: tail[2], name: tail[1].trim() };
+  // "Sales (200)" is a code; "Civils - Bundaberg (BDB1)" is a site name (more letters than digits)
+  if (tail && (tail[2].match(/\d/g) ?? []).length >= (tail[2].match(/[a-z]/gi) ?? []).length) return { code: tail[2], name: tail[1].trim() };
   const head = t.match(/^([A-Za-z]{0,3}[-.]?\d[\d.\-/]{0,11})\s*(?:[-–—:·•|]\s*|\s+)(.+)$/);
   if (head && /\d/.test(head[1]) && !/^\d{1,2}$/.test(head[1])) return { code: head[1], name: head[2].trim() };
   return { code: '', name: t };
@@ -156,12 +172,21 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
   const width = Math.max(1, ...rows.map((r) => r.length));
   const cols = Array.from({ length: width }, (_, c) => c);
 
-  // Label column: the one holding most text labels (leftmost on ties)
-  const textCount = cols.map((c) => rows.filter((r) => isText(r[c])).length);
+  // Label column: the one naming the rows that carry amounts (leftmost on near-ties). Titles and headings, which
+  // reports often indent into other columns, have no amounts and do not count.
+  const withNums = rows.filter((r) => r.some((v) => strictAmount(v) !== null));
+  const basis = withNums.length >= 3 ? withNums : rows;
+  const textCount = cols.map((c) => basis.filter((r) => isText(r[c])).length);
   const maxText = Math.max(...textCount);
   const labelCol = cols.find((c) => textCount[c] >= maxText * 0.6) ?? 0;
 
   const rowHasNum = (r: unknown[], c: number) => c !== labelCol && strictAmount(r[c]) !== null;
+  /** Reports often indent headings and totals into the columns left of the account names (Xero). */
+  const labelAt = (r: unknown[]): { text: string; level: number } => {
+    if (isText(r[labelCol])) return { text: String(r[labelCol]), level: labelCol };
+    for (let c = 0; c < labelCol; c++) if (c !== codeCol && isText(r[c]) && !CODE_RE.test(String(r[c]))) return { text: String(r[c]), level: c };
+    return { text: '', level: labelCol };
+  };
   // Code column: a column (other than the label) holding short code-like values on rows that also have a label
   const labelled = rows.filter((r) => isText(r[labelCol]));
   let codeCol = -1;
@@ -196,7 +221,8 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
   const amountCols: AmountColumn[] = amountColIdx.map((c) => {
     const h = headerRow >= 0 ? rows[headerRow][c] : '';
     const d = parseDateLabel(h);
-    return { col: c, header: h instanceof Date ? d.date ?? '' : String(h ?? ''), date: d.date, year: d.year };
+    const text = h instanceof Date ? d.date ?? '' : String(h ?? '');
+    return { col: c, header: text, date: d.date, year: d.year, ytd: YTD_RE.test(text), month: !!d.date && !(h instanceof Date) && MONTH_ONLY_RE.test(text) };
   });
 
   // Title rows: everything above the header (or above the first heading/data row)
@@ -208,6 +234,7 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
   const entityName =
     titles.find((t) => t.length < 80 && !/balance sheet|financial position|profit|loss|income statement|trial balance|report|as (of|at)|for the|period|month|year|ended|\d{4}|ytd|page|accrual|cash basis/i.test(t)) ?? null;
   const reportDate = titles.map((t) => parseDateLabel(t).date).find(Boolean) ?? null;
+  for (const c of amountCols) if (c.ytd && !c.date && reportDate) Object.assign(c, { date: reportDate, year: +reportDate.slice(0, 4) });
 
   // Report kind from titles and headings
   const allText = [...titles, ...rows.map((r) => (isText(r[labelCol]) ? String(r[labelCol]) : ''))].join(' \n ').toLowerCase();
@@ -218,6 +245,8 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
   // Walk the rows
   interface Frame {
     label: string;
+    /** column the heading sits in (indentation) */
+    level: number;
     sums: number[];
     /** account lines directly under this heading (not via a sub-heading) */
     direct: boolean;
@@ -238,7 +267,8 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const rawLabel = isText(r[labelCol]) ? String(r[labelCol]) : typeof r[labelCol] === 'number' && labelCol !== codeCol ? '' : String(r[labelCol] ?? '');
+    const at = labelAt(r);
+    const rawLabel = at.text;
     const amounts = amountCols.map((a) => strictAmount(r[a.col]));
     const hasAmt = amounts.some((v) => v !== null);
     const path = stack.map((f) => f.label);
@@ -260,14 +290,22 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
     const forced = opt.overrides?.[i];
 
     if (!hasAmt && !forced) {
+      // headings keep their full text: "ABX1 (Albury)" is a site, not account code ABX1
+      code = '';
+      name = rawLabel.trim();
       if (TOTAL_RE.test(name) || ENDS_TOTAL_RE.test(name)) {
         popTo(name);
         out.push({ ...base, type: 'total', label: name, reason: 'Total without amounts' });
       } else {
-        // a heading that directly follows account lines without a total is a sibling, not a child
         if (ROOT_RE.test(name)) stack.length = 0;
-        else if (stack.length && stack[stack.length - 1].direct) stack.pop();
-        stack.push({ label: name, sums: Array(n).fill(0), direct: false });
+        else {
+          // headings indented less than (or as much as) an open section close it: they are siblings or uncles
+          while (stack.length && stack[stack.length - 1].level > at.level) stack.pop();
+          const top = stack[stack.length - 1];
+          // same indent: a sibling if it is indented left of the accounts, or follows account lines without a total
+          if (top && top.level === at.level && (at.level < labelCol || top.direct)) stack.pop();
+        }
+        stack.push({ label: name, level: at.level, sums: Array(n).fill(0), direct: false });
         out.push({ ...base, type: 'heading', label: name, path: stack.slice(0, -1).map((f) => f.label), nature: headingNature(name), reason: 'Section heading (text without amounts)' });
       }
       continue;
@@ -308,6 +346,22 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
     out.push({ ...base, type: 'account', label: name, code, nature, currentEarnings, reason: forced === 'account' ? 'Included by you' : nature ? `Account under “${path[path.length - 1] ?? ''}”` : 'Account (no section found)' });
   }
 
+  // headings with no account lines after them are notes below the report (exchange rates, signatures …)
+  const lastAccount = out.reduce((k, r) => (r.type === 'account' || r.type === 'total' ? r.index : k), -1);
+  for (const r of out) if (r.index > lastAccount && r.type === 'heading') Object.assign(r, { type: 'note', reason: 'Note below the report' });
+
+  // Does the Year to date column add up the month columns? Then it covers exactly those months.
+  let ytdStart: string | null = null;
+  const yi = amountCols.findIndex((c) => c.ytd);
+  const months = amountCols.map((c, k) => ({ c, k })).filter((x) => x.c.month && x.c.date);
+  if (yi >= 0 && months.length) {
+    const accs = out.filter((r) => r.type === 'account');
+    const sums = accs.every((r) => Math.abs((r.amounts[yi] ?? 0) - months.reduce((t, m) => t + (r.amounts[m.k] ?? 0), 0)) < 0.6);
+    const ds = months.map((m) => m.c.date!).sort();
+    const contiguous = ds.every((d, k) => k === 0 || monthIndex(d) - monthIndex(ds[k - 1]) === 1);
+    if (accs.length && sums && contiguous && ds[ds.length - 1] === amountCols[yi].date) ytdStart = `${ds[0].slice(0, 7)}-01`;
+  }
+
   function findFrame(target: string): number {
     if (!target) return -1;
     for (let k = stack.length - 1; k >= 0; k--) if (stack[k].label.toLowerCase().replace(/^less[: ]+/, '') === target.replace(/^less[: ]+/, '')) return k;
@@ -318,7 +372,13 @@ export function analyseReport(raw: unknown[][], opt: AnalyseOptions = {}): Repor
     if (k >= 0) stack.length = k;
   }
 
-  return { kind, labelCol, codeCol, amountCols, rows: out, entityName, reportDate, totals: { agree, checked }, balance: running };
+  const currency =
+    rows
+      .flat()
+      .map((v) => (typeof v === 'string' ? v.match(/\b(?:into|amounts (?:are )?in|currency:?|presented in|expressed in)\s+([A-Z]{3})\b/)?.[1] : undefined))
+      .find(Boolean) ?? null;
+
+  return { kind, labelCol, codeCol, amountCols, rows: out, entityName, reportDate, currency, totals: { agree, checked }, ytdStart, balance: running };
 }
 
 /** Is this sheet a formatted report rather than a table with debit/credit columns? */
@@ -341,9 +401,14 @@ export function reportToLines(a: ReportAnalysis, colPeriods: (Period | null)[], 
   const lines: TBLine[] = [];
   for (const r of a.rows) {
     if (r.type !== 'account') continue;
+    // several columns can be set to one period (e.g. monthly columns added up): one line per period
+    const per = new Map<Period, number>();
     r.amounts.forEach((v, k) => {
       const period = colPeriods[k];
-      if (!period || v === null || (skipZero && Math.abs(v) < 0.005)) return;
+      if (period && v !== null) per.set(period, (per.get(period) ?? 0) + v);
+    });
+    per.forEach((v, period) => {
+      if (skipZero && Math.abs(v) < 0.005) return;
       const sourceId = sourceIds[period]!;
       lines.push({
         id: uid('ln'),
@@ -360,3 +425,59 @@ export function reportToLines(a: ReportAnalysis, colPeriods: (Period | null)[], 
   }
   return lines;
 }
+
+export type ColPeriod = Period | 'skip';
+
+/**
+ * Default period for each amount column.
+ * - P&L with a Year to date column (monthly Xero layouts): import the YTD column, not the single months.
+ * - P&L with only month columns and a period start set: add up the months inside each period.
+ * - Otherwise by exact date, then by year (one column per period), then left-to-right.
+ * Balance sheet columns are points in time and are never added together.
+ */
+export function defaultColPeriods(a: ReportAnalysis, project: Project): ColPeriod[] {
+  const cy = periodEndOf(project, 'cy'),
+    py = periodEndOf(project, 'py');
+  const cols = a.amountCols;
+  const out: (ColPeriod | null)[] = cols.map(() => null);
+  const pl = a.kind !== 'balance_sheet';
+  if (pl && cols.some((c) => c.ytd)) {
+    cols.forEach((c, i) => {
+      if (!c.ytd) out[i] = 'skip';
+      else if (c.date === py && !out.includes('py')) out[i] = 'py';
+      else if (!out.includes('cy')) out[i] = 'cy';
+      else out[i] = 'skip';
+    });
+    return out as ColPeriod[];
+  }
+  if (pl && project.periodStart && cols.some((c) => c.month)) {
+    const s = periodStartOf(project, 'cy'),
+      ps = periodStartOf(project, 'py');
+    cols.forEach((c, i) => {
+      if (!c.month || !c.date) return;
+      out[i] = c.date >= s && c.date <= cy ? 'cy' : c.date >= ps && c.date <= py ? 'py' : 'skip';
+    });
+    if (out.includes('cy') || out.includes('py')) return out.map((x) => x ?? 'skip') as ColPeriod[];
+  }
+  cols.forEach((c, i) => (out[i] = c.date === cy && !out.includes('cy') ? 'cy' : c.date === py && !out.includes('py') ? 'py' : null));
+  cols.forEach((c, i) => {
+    if (out[i]) return;
+    if (c.year === +cy.slice(0, 4) && !out.includes('cy')) out[i] = 'cy';
+    else if (c.year === +py.slice(0, 4) && !out.includes('py')) out[i] = 'py';
+  });
+  const datesKnown = cols.some((c) => c.date || c.year);
+  cols.forEach((_, i) => {
+    if (out[i]) return;
+    if (!datesKnown && !out.includes('cy')) out[i] = 'cy';
+    else if (!datesKnown && !out.includes('py')) out[i] = 'py';
+    else out[i] = 'skip';
+  });
+  // dated columns that match neither period: take the newest as current and the next as prior
+  if (!out.includes('cy') && !out.includes('py') && datesKnown) {
+    const order = cols.map((c, i) => ({ i, key: c.date ?? `${c.year}-12-31` })).sort((x, y) => (x.key < y.key ? 1 : -1));
+    if (order[0]) out[order[0].i] = 'cy';
+    if (order[1]) out[order[1].i] = 'py';
+  }
+  return out as ColPeriod[];
+}
+

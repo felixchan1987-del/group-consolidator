@@ -97,7 +97,7 @@ export function analyseStructure(p: Project): StructureInfo {
   const parent = p.parentId && ids.includes(p.parentId) ? p.parentId : null;
   const infl = p.settings.influenceThreshold / 100;
   const end = p.periodEnd;
-  const opening = openingDate(end);
+  const opening = openingDate(end, p.periodStart);
   const holdings = p.holdings.filter((h) => ids.includes(h.holderId) && ids.includes(h.investeeId) && h.holderId !== h.investeeId && h.investeeId !== parent);
   if (parent && p.holdings.some((h) => h.investeeId === parent)) warnings.push('Holdings in the parent entity (e.g. reciprocal / treasury shares) are ignored.');
   if (!parent && p.entities.length) warnings.push('No parent entity selected — choose the ultimate parent on the Group Structure page.');
@@ -114,7 +114,7 @@ export function analyseStructure(p: Project): StructureInfo {
   const groupVotes = { ...atEnd.votes };
 
   // Dates inside the period when ownership changed, in order
-  const changes = [...new Set(holdings.flatMap((h) => [h.acqDate, h.disposalDate]).filter((d): d is string => inPeriod(d, end)))].sort();
+  const changes = [...new Set(holdings.flatMap((h) => [h.acqDate, h.disposalDate]).filter((d): d is string => inPeriod(d, end, opening)))].sort();
 
   for (const id of ids) {
     const e = p.entities.find((x) => x.id === id)!;
@@ -128,7 +128,7 @@ export function analyseStructure(p: Project): StructureInfo {
         const d = changes.find((c) => snapshot(p, c, parent, holdings).controlled.has(id));
         if (d) {
           changeDate[id] = d;
-          fraction[id] = fractionFrom(d, end);
+          fraction[id] = fractionFrom(d, end, opening);
         }
       }
     } else if (atStart.controlled.has(id) && e.method !== 'exclude') {
@@ -136,7 +136,7 @@ export function analyseStructure(p: Project): StructureInfo {
       const d = changes.find((c) => !snapshot(p, c, parent, holdings).controlled.has(id)) ?? end;
       method[id] = 'disposed';
       changeDate[id] = d;
-      fraction[id] = fractionTo(d, end);
+      fraction[id] = fractionTo(d, end, opening);
       // ownership just before control was lost
       effective[id] = atStart.effective[id];
       groupVotes[id] = atStart.votes[id];
@@ -148,7 +148,7 @@ export function analyseStructure(p: Project): StructureInfo {
   }
 
   // Levels (longest path from parent through holdings relevant to the period) for the org chart
-  const relevant = holdings.filter((h) => heldOn(h, end) || heldOn(h, opening) || inPeriod(h.acqDate, end));
+  const relevant = holdings.filter((h) => heldOn(h, end) || heldOn(h, opening) || inPeriod(h.acqDate, end, opening));
   for (const id of ids) level[id] = id === parent ? 0 : -1;
   for (let iter = 0; iter < ids.length + 1; iter++) {
     for (const h of relevant) {

@@ -292,7 +292,7 @@ export function consolidate(p: Project): ConsolidationResult {
   const working: Record<string, Balances> = {};
   for (const id of consolidatedIds) working[id] = { ...translation[id].translated };
   const end = p.periodEnd;
-  const opening = openingDate(end);
+  const opening = openingDate(end, p.periodStart);
   const plAccounts = accounts.filter((a) => a.type === 'revenue' || a.type === 'expense');
 
   // 1b. Entities that joined or left the group during the period: keep only the results for the time in the group.
@@ -403,13 +403,13 @@ export function consolidate(p: Project): ConsolidationResult {
     const parts = equityParts(translation[e.id].translated, accounts);
     const sched: AssocSchedule = { entityId: e.id, name: e.name, groupVotes: structure.groupVotes[e.id], equity: parts.equityExFx + parts.fctr, profit: parts.profit, pickups: [] };
     for (const h of p.holdings.filter((x) => x.investeeId === e.id && isCons(x.holderId) && m[x.holderId] !== 'disposed')) {
-      if (inPeriod(h.disposalDate, end))
+      if (inPeriod(h.disposalDate, end, opening))
         checks.push({ level: 'warn', message: `${name(h.holderId)} sold shares in associate ${e.name} during the period — record the disposal with a manual journal.` });
       if (!heldOn(h, end)) continue;
       const f = h.pct / 100;
       const acq = h.acqEquity ?? sched.equity;
       // bought during the period: only the post-acquisition share of profit; the rest is in the acquired net assets
-      const post = inPeriod(h.acqDate, end) ? fractionFrom(h.acqDate, end) : 1;
+      const post = inPeriod(h.acqDate, end, opening) ? fractionFrom(h.acqDate, end, opening) : 1;
       const profit = f * parts.profit * post;
       const reserves = f * (sched.equity + parts.profit - acq) - profit;
       sched.pickups.push({ holderId: h.holderId, holderName: name(h.holderId), pct: f, cost: h.cost, acqEquity: acq, reserves, profit });
@@ -436,7 +436,7 @@ export function consolidate(p: Project): ConsolidationResult {
     const { equityExFx, fctr, profit } = equityParts(b, accounts);
     const g = structure.effective[sid];
     const holds = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId) && m[h.holderId] !== 'disposed' && heldOn(h, end));
-    for (const h of p.holdings.filter((x) => x.investeeId === sid && inPeriod(x.disposalDate, end)))
+    for (const h of p.holdings.filter((x) => x.investeeId === sid && inPeriod(x.disposalDate, end, opening)))
       checks.push({ level: 'warn', message: `${name(h.holderId)} sold part of ${s.name} without losing control — the change in NCI is an equity transaction; record it with a manual journal.` });
     const sched: SubSchedule = {
       entityId: sid,
@@ -502,7 +502,7 @@ export function consolidate(p: Project): ConsolidationResult {
     const { equityExFx: e0, fctr: f0 } = equityParts(translation[sid].translated, accounts); // opening equity, FCTR
     const pIn = equityParts(b, accounts).profit; // results up to disposal
     const held = p.holdings.filter((h) => h.investeeId === sid && isCons(h.holderId) && heldOn(h, opening));
-    const sold = held.filter((h) => inPeriod(h.disposalDate, end));
+    const sold = held.filter((h) => inPeriod(h.disposalDate, end, opening));
     let r0 = 0,
       goodwill = 0,
       indirect = 0;
