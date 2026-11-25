@@ -6,6 +6,7 @@ import { ROLE_LABELS, SECTIONS_BY_TYPE, sortAccounts } from '../lib/coa';
 import { signedAmount } from '../lib/consolidate';
 import { fmt, lineKey } from '../lib/util';
 import { mappingMemory } from './UploadPage';
+import { IC_ROLES, autoTagCounterparties } from '../lib/counterparty';
 
 const TYPE_LABEL: Record<AccountType, string> = { asset: 'Assets', liability: 'Liabilities', equity: 'Equity', revenue: 'Income', expense: 'Expenses' };
 
@@ -69,7 +70,17 @@ export default function MappingPage({ project, update, result, prior, go }: Page
         if (code) x.mapping[k] = code;
         else delete x.mapping[k];
       }
+      autoTagCounterparties(d);
     });
+  const setCp = (key: string, cp: string) =>
+    update((d) => {
+      const x = d.entities.find((y) => y.id === e.id)!;
+      x.counterparty = { ...(x.counterparty ?? {}) };
+      if (cp) x.counterparty[key] = cp;
+      else delete x.counterparty[key];
+    });
+  const isIc = (code: string) => (IC_ROLES as readonly string[]).includes(accMap.get(code)?.role ?? '');
+  const anyIc = rows.some((r) => isIc(e.mapping[r.key] ?? ''));
   const autoMap = (overwrite: boolean) =>
     update((d) => {
       const mem = overwrite ? {} : mappingMemory(d);
@@ -80,6 +91,7 @@ export default function MappingPage({ project, update, result, prior, go }: Page
           const s = suggestMapping(l.code, l.name, d.accounts, mem);
           if (s) x.mapping[k] = s.code;
         }
+      autoTagCounterparties(d, overwrite);
     });
 
   const unmappedTotal = [result, prior].reduce((s, r) => s + (r ? Object.values(r.translation).reduce((x, t) => x + t.unmappedCount, 0) : 0), 0);
@@ -92,7 +104,7 @@ export default function MappingPage({ project, update, result, prior, go }: Page
           <h2>Map local accounts to the group chart of accounts</h2>
           <p className="muted">
             Each company keeps its own chart of accounts; map every line to a group account. Suggestions come from account names and code ranges, and anything you map is remembered for other companies with the same
-            account name. Intercompany accounts must map to the <b>Intercompany</b> group accounts to be eliminated automatically.
+            account name. Intercompany accounts must map to the <b>Intercompany</b> group accounts and name the <b>counterparty</b> company, so balances can be reconciled and eliminated company by company.
           </p>
         </div>
         <div className="row">
@@ -153,6 +165,7 @@ export default function MappingPage({ project, update, result, prior, go }: Page
               <th className="num">Current ({e.currency}, Dr+ / Cr−)</th>
               {showPrior && <th className="num">Prior period</th>}
               <th style={{ width: 340 }}>Group account</th>
+              {anyIc && <th title="The group company on the other side of an intercompany balance">Counterparty</th>}
               <th>Suggestion</th>
             </tr>
           </thead>
@@ -172,6 +185,22 @@ export default function MappingPage({ project, update, result, prior, go }: Page
                   <td>
                     <AccountSelect accounts={project.accounts} value={cur} onChange={(v) => setMap([r.key], v)} />
                   </td>
+                  {anyIc && (
+                    <td>
+                      {isIc(cur) && (
+                        <select value={e.counterparty?.[r.key] ?? ''} onChange={(ev) => setCp(r.key, ev.target.value)} style={{ borderColor: e.counterparty?.[r.key] ? undefined : 'var(--warn)' }} aria-label="Counterparty">
+                          <option value="">— which company? —</option>
+                          {project.entities
+                            .filter((x) => x.id !== e.id)
+                            .map((x) => (
+                              <option key={x.id} value={x.id}>
+                                {x.name}
+                              </option>
+                            ))}
+                        </select>
+                      )}
+                    </td>
+                  )}
                   <td className="small">
                     {sug && sug.code !== cur ? (
                       <button className="btn sm" onClick={() => setMap([r.key], sug.code)} title={accMap.get(sug.code)?.name}>

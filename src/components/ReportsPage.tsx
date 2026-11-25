@@ -7,7 +7,7 @@ import { fmt, pct } from '../lib/util';
 import { periodEndOf } from '../lib/periods';
 import type { Period } from '../types';
 
-type Tab = 'bs' | 'is' | 'ws' | 'nci' | 'jr' | 'checks';
+type Tab = 'bs' | 'is' | 'ws' | 'nci' | 'ic' | 'jr' | 'checks';
 
 function Statement({ lines, title, sub, heads }: { lines: StmtLine[]; title: string; sub: string; heads: [string, string] }) {
   const hasPy = lines.some((l) => l.prior !== undefined);
@@ -108,6 +108,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
             ['is', 'Income statement'],
             ['ws', 'Consolidation worksheet'],
             ['nci', 'Goodwill & NCI'],
+            ['ic', `Intercompany${cyResult.icRecon.some((x) => Math.abs(x.difference) > 0.5) || prior?.icRecon.some((x) => Math.abs(x.difference) > 0.5) ? ' ⚠' : ''}`],
             ['jr', `Elimination journals (${r.journals.length})`],
             ['checks', `Checks${errors.length ? ` (${errors.length} errors)` : warns.length ? ` (${warns.length} warnings)` : ''}`],
           ] as [Tab, string][]
@@ -118,7 +119,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
         ))}
       </div>
 
-      {prior && ['ws', 'nci', 'jr'].includes(tab) && (
+      {prior && ['ws', 'nci', 'ic', 'jr'].includes(tab) && (
         <div className="row">
           <span className="small muted">Period:</span>
           {(['cy', 'py'] as Period[]).map((x) => (
@@ -335,6 +336,69 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'ic' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {!project.settings.autoEliminateIC && <div className="callout warn small">Automatic intercompany elimination is switched off (FX &amp; adjustments page).</div>}
+          {(
+            [
+              ['balance', 'Receivables / payables', 'Receivable shown by', 'Payable shown by'],
+              ['pl', 'Revenue / expenses', 'Expense shown by', 'Revenue shown by'],
+            ] as const
+          ).map(([kind, title, dl, cl]) => {
+            const rows = r.icRecon.filter((x) => x.kind === kind);
+            return (
+              <div key={kind}>
+                <h3 style={{ marginBottom: 8 }}>{title}</h3>
+                {rows.length === 0 ? (
+                  <div className="small muted">No intercompany {title.toLowerCase()} between consolidated companies.</div>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>{dl}</th>
+                          <th className="num">Amount</th>
+                          <th>{cl}</th>
+                          <th className="num">Amount</th>
+                          <th className="num">Eliminated</th>
+                          <th className="num">Difference</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((x, i) => (
+                          <tr key={i}>
+                            <td>{x.debitName}</td>
+                            <td className="num">{fmt(x.debitAmount)}</td>
+                            <td>{x.creditName}</td>
+                            <td className="num">{fmt(x.creditAmount)}</td>
+                            <td className="num">{fmt(x.eliminated)}</td>
+                            <td className="num">{fmt(x.difference)}</td>
+                            <td>
+                              {!x.debitId ? (
+                                <span className="badge warn">tag counterparties</span>
+                              ) : Math.abs(x.difference) <= 0.5 ? (
+                                <span className="badge ok">Agreed</span>
+                              ) : (
+                                <span className="badge err">Mismatch</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <p className="small muted">
+            Amounts in {project.presentationCurrency} after translation. Matched amounts are eliminated; differences stay in the consolidated accounts until the companies agree their balances (common causes: cut-off,
+            goods or cash in transit, different exchange rates, or a line mapped to the wrong account).
+          </p>
         </div>
       )}
 
