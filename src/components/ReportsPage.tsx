@@ -5,11 +5,23 @@ import { exportConsolidation } from '../lib/exportXlsx';
 import { ADJ_LABELS } from '../lib/consolidate';
 import { fmt, pct } from '../lib/util';
 import { periodEndOf } from '../lib/periods';
+import DrillPanel from './DrillPanel';
+import { UNMAPPED } from '../lib/consolidate';
 import type { Period } from '../types';
 
 type Tab = 'bs' | 'is' | 'ws' | 'nci' | 'ic' | 'jr' | 'checks';
 
-function Statement({ lines, title, sub, heads }: { lines: StmtLine[]; title: string; sub: string; heads: [string, string] }) {
+function Statement({ lines, title, sub, heads, onDrill }: { lines: StmtLine[]; title: string; sub: string; heads: [string, string]; onDrill: (code: string, period: Period) => void }) {
+  const cell = (l: StmtLine, period: Period) => {
+    const v = period === 'cy' ? l.value : l.prior ?? 0;
+    if (l.kind === 'heading') return '';
+    if (!l.code || Math.abs(v) < 0.005) return fmt(v);
+    return (
+      <button className="drill" onClick={() => onDrill(l.code!, period)} title="Show source lines and consolidation entries">
+        {fmt(v)}
+      </button>
+    );
+  };
   const hasPy = lines.some((l) => l.prior !== undefined);
   return (
     <div>
@@ -29,8 +41,8 @@ function Statement({ lines, title, sub, heads }: { lines: StmtLine[]; title: str
           {lines.map((l, i) => (
             <tr key={i} className={l.kind}>
               <td>{l.label}</td>
-              <td className="num">{l.kind === 'heading' ? '' : fmt(l.value)}</td>
-              {hasPy && <td className="num muted">{l.kind === 'heading' ? '' : fmt(l.prior ?? 0)}</td>}
+              <td className="num">{cell(l, 'cy')}</td>
+              {hasPy && <td className="num muted">{cell(l, 'py')}</td>}
             </tr>
           ))}
         </tbody>
@@ -44,6 +56,8 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
   const [per, setPer] = useState<Period>('cy');
   // detail tabs (worksheet, NCI, journals) show one period at a time
   const r = per === 'py' && prior ? prior : cyResult;
+  const [drillAt, setDrillAt] = useState<{ account: string; column: string; period: Period } | null>(null);
+  const openDrill = (account: string, column: string, period: Period) => setDrillAt({ account, column, period });
   const [showZero, setShowZero] = useState(false);
   const cur = project.presentationCurrency;
   const sub = `${project.name} · period ended ${project.periodEnd} · ${cur}`;
@@ -71,7 +85,7 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
         <div>
           <h2>Consolidated reports</h2>
           <p className="muted">
-            {cyResult.consolidatedIds.length} entities fully consolidated, {cyResult.associates.length} equity-accounted{prior ? ', with comparatives' : ''}. Everything recalculates live as you change data, structure or mappings.
+            {cyResult.consolidatedIds.length} entities fully consolidated, {cyResult.associates.length} equity-accounted{prior ? ', with comparatives' : ''}. Everything recalculates live as you change data, structure or mappings. Click any amount to drill down to the source lines.
           </p>
         </div>
         <button className="btn primary" onClick={() => exportConsolidation(project, cyResult, prior)}>
@@ -129,13 +143,13 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
           ))}
         </div>
       )}
-      {tab === 'bs' && <Statement lines={bs} heads={heads} title="Consolidated statement of financial position" sub={sub} />}
-      {tab === 'is' && <Statement lines={is} heads={heads} title="Consolidated statement of profit or loss" sub={sub} />}
+      {tab === 'bs' && <Statement lines={bs} heads={heads} onDrill={(c, p) => openDrill(c, 'total', p)} title="Consolidated statement of financial position" sub={sub} />}
+      {tab === 'is' && <Statement lines={is} heads={heads} onDrill={(c, p) => openDrill(c, 'total', p)} title="Consolidated statement of profit or loss" sub={sub} />}
 
       {tab === 'ws' && (
         <>
           <div className="row">
-            <span className="small muted">Debit positive, credit in brackets. Entity columns are translated to {cur} and mapped to group accounts.</span>
+            <span className="small muted">Debit positive, credit in brackets. Entity columns are translated to {cur} and mapped to group accounts. Click any amount to see where it comes from.</span>
             <div className="grow" />
             <label className="check small">
               <input type="checkbox" checked={showZero} onChange={(e) => setShowZero(e.target.checked)} /> Show zero rows
@@ -163,7 +177,13 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
                       </td>
                       {r.columns.map((c) => (
                         <td key={c.key} className={`num ${c.kind === 'total' ? 'col-total' : c.kind === 'adj' ? 'col-adj' : ''}`}>
-                          {fmt(row.values[c.key])}
+                          {Math.abs(row.values[c.key]) < 0.005 ? (
+                            fmt(row.values[c.key])
+                          ) : (
+                            <button className="drill" onClick={() => openDrill(row.code === '—' ? UNMAPPED : row.code, c.key, per)} title="Show source lines and consolidation entries">
+                              {fmt(row.values[c.key])}
+                            </button>
+                          )}
                         </td>
                       ))}
                     </tr>
@@ -447,6 +467,16 @@ export default function ReportsPage({ project, result: cyResult, prior }: PagePr
             </li>
           ))}
         </ul>
+      )}
+      {drillAt && (
+        <DrillPanel
+          project={project}
+          result={drillAt.period === 'py' && prior ? prior : cyResult}
+          account={drillAt.account}
+          column={drillAt.column}
+          periodLabel={`period ended ${periodEndOf(project, drillAt.period)}`}
+          onClose={() => setDrillAt(null)}
+        />
       )}
     </section>
   );

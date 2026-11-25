@@ -54,6 +54,10 @@ The engine consolidates each period on its own, with that period's rates and jou
 
 Sign convention internally: debit positive, credit negative.
 
+### Drill-down
+
+Click any amount in the balance sheet, income statement (either year) or consolidation worksheet. A panel lists the trial balance lines behind it: company, source file, local account, local amount, exchange rate used and translated amount. It also shows the calculated translation difference and every consolidation entry posted to that account. The panel can be downloaded to Excel. A test checks that every worksheet cell equals the sum of its drill-down.
+
 ### Simplifications to be aware of
 
 - One historical rate per entity for all equity lines (opening retained earnings are usually built up year by year).
